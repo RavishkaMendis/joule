@@ -1,0 +1,40 @@
+{
+  "artboards": [
+    { "file": "Main.dc.html", "x": 0, "y": 0, "w": 430, "h": 932, "title": "Today" },
+    { "file": "Confirm.dc.html", "x": 550, "y": 0, "w": 430, "h": 932, "title": "Confirm entries" },
+    { "file": "MealPrep.dc.html", "x": 1100, "y": 0, "w": 430, "h": 932, "title": "Meal prep — new pot" },
+    { "file": "Trends.dc.html", "x": 1650, "y": 0, "w": 430, "h": 932, "title": "Trends" },
+    { "file": "Train.dc.html", "x": 2200, "y": 0, "w": 430, "h": 932, "title": "Train" }
+  ],
+  "annotations": [
+    {
+      "id": "direction",
+      "x": 0,
+      "y": -190,
+      "w": 560,
+      "text": "Direction: elevation by surface step, not shadow.\n\nOn #000 OLED black a drop shadow is invisible. Depth comes from #000 → #161616 → #1f1f1f plus 1px #2c2c2e hairlines. Same tokens as the app today — nothing new invented."
+    },
+    {
+      "id": "type",
+      "x": 620,
+      "y": -190,
+      "w": 480,
+      "text": "Typography: system font, tabular numerals.\n\nThe app is almost entirely numbers. tabular-nums stops digits jittering as values change. Display drops 40→64px only for the one hero number; everything else tightens to 28/20/16/13/11 with −0.02em on headings."
+    },
+    {
+      "id": "rhythm",
+      "x": 1160,
+      "y": -190,
+      "w": 480,
+      "text": "Spacing: grouping, not an even stack.\n\n8px within a group, 24px between related blocks, 32px between sections. The old screen used 16px everywhere, which is why it read as one undifferentiated column."
+    },
+    {
+      "id": "rules",
+      "x": 1700,
+      "y": -190,
+      "w": 560,
+      "text": "Unchanged and non-negotiable:\n\nNo red anywhere — over-target renders identically to under-target. Confidence stays visible as weight and opacity, never a traffic light. Expenditure is always a range. ~ marks an estimated figure. These are engine-integrity rules, not styling."
+    }
+  ],
+  "launch": { "view": "canvas" }
+}
