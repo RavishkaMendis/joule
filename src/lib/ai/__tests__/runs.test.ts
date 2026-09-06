@@ -212,3 +212,61 @@ describe('runPotIngredientsPhoto', () => {
     expect(result.reason).toBe('no_items');
   });
 });
+
+// ═══════════════════════════════════════════════════════════════════════
+// PROXY ERROR MAPPING — the transport-level `GeminiCallError` kinds
+// ('unauthorized' / 'model_not_permitted', geminiClient.ts's proxy-only
+// classification) must reach the screens/capture-job queue as their own
+// honest `AiRunResult.reason`, never collapsed into the generic 'network'
+// bucket a plain HTTP failure gets.
+// ═══════════════════════════════════════════════════════════════════════
+
+describe('run* orchestration — proxy error mapping', () => {
+  const ORIGINAL_PROXY_URL = process.env.EXPO_PUBLIC_JOULE_PROXY_URL;
+  const ORIGINAL_PROXY_TOKEN = process.env.EXPO_PUBLIC_JOULE_PROXY_TOKEN;
+
+  afterEach(() => {
+    process.env.EXPO_PUBLIC_GEMINI_API_KEY = ORIGINAL_ENV;
+    process.env.EXPO_PUBLIC_JOULE_PROXY_URL = ORIGINAL_PROXY_URL;
+    process.env.EXPO_PUBLIC_JOULE_PROXY_TOKEN = ORIGINAL_PROXY_TOKEN;
+    global.fetch = ORIGINAL_FETCH;
+  });
+
+  it("maps a proxy 401 to reason 'proxy_unauthorized', distinct from a generic network failure", async () => {
+    delete process.env.EXPO_PUBLIC_GEMINI_API_KEY;
+    process.env.EXPO_PUBLIC_JOULE_PROXY_URL = 'https://proxy.example/api/gemini';
+    process.env.EXPO_PUBLIC_JOULE_PROXY_TOKEN = 'wrong-token';
+    global.fetch = jest.fn(async () => ({
+      ok: false,
+      status: 401,
+      statusText: '',
+      json: async () => ({ error: { message: 'Unauthorized.' } }),
+    })) as unknown as typeof fetch;
+
+    const result = await runLabelOcr('base64photo');
+
+    expect(result.ok).toBe(false);
+    if (result.ok) return;
+    expect(result.reason).toBe('proxy_unauthorized');
+    expect(result.reason).not.toBe('network');
+  });
+
+  it("maps the proxy's 400 'Model not permitted' to reason 'proxy_model_not_permitted'", async () => {
+    delete process.env.EXPO_PUBLIC_GEMINI_API_KEY;
+    process.env.EXPO_PUBLIC_JOULE_PROXY_URL = 'https://proxy.example/api/gemini';
+    process.env.EXPO_PUBLIC_JOULE_PROXY_TOKEN = 'shared-token';
+    global.fetch = jest.fn(async () => ({
+      ok: false,
+      status: 400,
+      statusText: '',
+      json: async () => ({ error: { message: 'Model not permitted by this proxy: gemini-3.5-flash-lite' } }),
+    })) as unknown as typeof fetch;
+
+    const result = await runLabelOcr('base64photo');
+
+    expect(result.ok).toBe(false);
+    if (result.ok) return;
+    expect(result.reason).toBe('proxy_model_not_permitted');
+    expect(result.detail).toContain('gemini-3.5-flash-lite');
+  });
+});

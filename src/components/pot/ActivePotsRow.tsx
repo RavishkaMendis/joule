@@ -24,7 +24,7 @@ import { colors, minTouchTarget, numeric, radii, spacing, type } from '../../lib
 import { getDatabase } from '../../lib/db';
 import * as potRepo from '../../db/repositories/potRepo';
 import type { PotRow } from '../../db/types';
-import { potConfidenceSummary } from '../../lib/potActions';
+import { potConfidenceSummary, potRemainingStatus } from '../../lib/potActions';
 
 type Nav = NativeStackNavigationProp<RootStackParamList>;
 
@@ -55,22 +55,23 @@ export function ActivePotsRow() {
           // quality-check before tapping in to log a serving.
           const confidence = potConfidenceSummary(pot);
           const confidencePct = confidence.totalKcal > 0 ? Math.round(confidence.exactEnergyFraction * 100) : null;
+          // Task brief "running low is a state, not a cliff": a pot that's
+          // hit (or been floored at) zero stays right here rather than
+          // vanishing — see potActions.potRemainingStatus's own doc.
+          const remaining = potRemainingStatus(pot);
           return (
             <Pressable
               key={pot.id}
               onPress={() => navigation.navigate('PotLogServing', { potId: pot.id })}
               style={({ pressed }) => [styles.chip, pressed && styles.chipPressed]}
               accessibilityRole="button"
-              accessibilityLabel={`Log a serving from ${pot.name}, ${pot.remaining_g !== null ? `${Math.round(pot.remaining_g)} grams remaining` : 'not yet weighed'}${confidencePct !== null ? `, ${confidencePct}% of calories from a scanned or database match` : ''}`}
+              accessibilityLabel={`Log a serving from ${pot.name}, ${remaining.label}${confidencePct !== null ? `, ${confidencePct}% of calories from a scanned or database match` : ''}`}
             >
               <Text style={styles.chipName} numberOfLines={1}>
                 {pot.name}
               </Text>
-              {/* Task brief #1: a pot with no cooked weight yet has no
-                  remaining_g to show — say so honestly rather than
-                  rendering a fabricated 0g. */}
               <Text style={styles.chipMeta}>
-                {pot.remaining_g !== null ? `${Math.round(pot.remaining_g)}g left` : 'Not yet weighed'}
+                {remaining.label}
                 {confidencePct !== null ? ` · ${confidencePct}% exact` : ''}
               </Text>
             </Pressable>

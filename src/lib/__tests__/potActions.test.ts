@@ -47,6 +47,11 @@ import {
   dismissFatPlausibilityNote,
   resetPotFatNoteTableForTesting,
   isWeighedPot,
+  finishPot,
+  reopenPot,
+  duplicatePotForCookAgain,
+  potRemainingStatusFromFields,
+  potRemainingStatus,
   type CurrentIngredientRow,
 } from '../potActions';
 import type { Database } from '../../db/database';
@@ -820,7 +825,12 @@ describe('updatePot', () => {
     expect(updated.is_active).toBe(1);
   });
 
-  it('remaining_g: clamps to 0 (and re-archives) when the corrected cooked weight is below what was already served', async () => {
+  // REWORK ("the pots going to zero thing"): is_active is never re-derived
+  // from a recomputed remaining_g, including here — an edit that happens
+  // to bring the computed remainder to zero must not silently re-archive
+  // a pot the user never said was finished. See potRepo.updatePot's own
+  // doc; finishing is exclusively `finishPot`/`archivePot` now.
+  it('remaining_g: clamps to 0 (never re-archives) when the corrected cooked weight is below what was already served', async () => {
     const db = await freshDb();
     const pot = await createPot(db, {
       name: 'Batch',
@@ -838,7 +848,30 @@ describe('updatePot', () => {
     });
 
     expect(updated.remaining_g).toBe(0);
-    expect(updated.is_active).toBe(0);
+    expect(updated.is_active).toBe(1); // preserved, not inferred from the new remainder
+  });
+
+  // Symmetric case: an edit must not silently REOPEN an explicitly-finished
+  // pot either, just because the recomputed remainder is positive again.
+  it('remaining_g: an explicitly-finished pot stays finished across a cooked-weight edit that raises the remainder back above 0', async () => {
+    const db = await freshDb();
+    const pot = await createPot(db, {
+      name: 'Batch',
+      totalWeightG: 1000,
+      ingredients: [{ name: 'everything', grams: 1000, kcal: 1500, protein_g: 100, carbs_g: 150, fat_g: 30, confidence: 'exact' }],
+    });
+    await logPotServing(db, { potId: pot.id, date: '2026-08-01', mode: 'tared', scaleReadingG: 300 });
+    await finishPot(db, pot.id);
+
+    const updated = await updatePot(db, {
+      id: pot.id,
+      name: pot.name,
+      totalWeightG: 1200, // corrected UP — would recompute a positive remainder
+      ingredients: [{ name: 'everything', grams: 1000, kcal: 1500, protein_g: 100, carbs_g: 150, fat_g: 30, confidence: 'exact' }],
+    });
+
+    expect(updated.remaining_g).toBe(900);
+    expect(updated.is_active).toBe(0); // still finished — reopenPot is the only way back
   });
 
   it('remaining_g: setting a cooked weight for the first time via edit (no prior servings possible) starts fresh at the new total', async () => {
@@ -951,5 +984,182 @@ describe('fat-plausibility note dismissal (per-pot, persisted)', () => {
     await dismissFatPlausibilityNote(db, 'pot1');
     expect(await isFatPlausibilityNoteDismissed(db, 'pot1')).toBe(true);
     expect(await isFatPlausibilityNoteDismissed(db, 'pot2')).toBe(false);
+  });
+});
+
+// ═══════════════════════════════════════════════════════════════════════
+// FINISH / REOPEN / COOK AGAIN — the rework of "the pots going to zero
+// thing" (task brief). Three failure modes fixed together:
+//   1. remaining_g hitting/being floored at zero no longer locks the user
+//      out of a pot with food plainly still in it (see potRepo.ts tests
+//      for the logServing/updatePot side of this).
+//   2. "Finished" is now an explicit action (finishPot/reopenPot), never
+//      an inferred arithmetic threshold.
+//   3. An archived pot is a recipe — duplicatePotForCookAgain turns any
+//      pot (finished or not) into a fresh, independent one ready for a
+//      new cooked weight, without touching the original or its history.
+// ═══════════════════════════════════════════════════════════════════════
+describe('finishPot / reopenPot', () => {
+  it('finishPot archives the pot without touching remaining_g/ingredients', async () => {
+    const db = await freshDb();
+    const pot = await createPot(db, {
+      name: 'Batch',
+      totalWeightG: 1000,
+      ingredients: [{ name: 'x', grams: 1000, kcal: 1500, protein_g: 100, carbs_g: 150, fat_g: 30, confidence: 'exact' }],
+    });
+    await logPotServing(db, { potId: pot.id, date: '2026-08-01', mode: 'tared', scaleReadingG: 300 });
+
+    const finished = await finishPot(db, pot.id);
+    expect(finished.is_active).toBe(0);
+    expect(finished.remaining_g).toBe(700); // untouched by finishing
+
+    expect(await potRepo.getActivePots(db)).toHaveLength(0);
+    expect(await potRepo.getArchivedPots(db)).toHaveLength(1);
+  });
+
+  it('finishPot works even with food plainly still left — finishing is never blocked by a positive remainder', async () => {
+    const db = await freshDb();
+    const pot = await createPot(db, {
+      name: 'Batch',
+      totalWeightG: 1000,
+      ingredients: [{ name: 'x', grams: 1000, kcal: 1500, protein_g: 100, carbs_g: 150, fat_g: 30, confidence: 'exact' }],
+    });
+
+    const finished = await finishPot(db, pot.id);
+    expect(finished.is_active).toBe(0);
+    expect(finished.remaining_g).toBe(1000);
+  });
+
+  it('reopenPot is the exact reverse — active list and numbers both restored', async () => {
+    const db = await freshDb();
+    const pot = await createPot(db, {
+      name: 'Batch',
+      totalWeightG: 1000,
+      ingredients: [{ name: 'x', grams: 1000, kcal: 1500, protein_g: 100, carbs_g: 150, fat_g: 30, confidence: 'exact' }],
+    });
+    await finishPot(db, pot.id);
+
+    const reopened = await reopenPot(db, pot.id);
+    expect(reopened.is_active).toBe(1);
+    expect(reopened.remaining_g).toBe(1000);
+    expect(await potRepo.getActivePots(db)).toHaveLength(1);
+    expect(await potRepo.getArchivedPots(db)).toHaveLength(0);
+  });
+
+  it('a reopened pot can immediately log a new serving', async () => {
+    const db = await freshDb();
+    const pot = await createPot(db, {
+      name: 'Batch',
+      totalWeightG: 1000,
+      ingredients: [{ name: 'x', grams: 1000, kcal: 1500, protein_g: 100, carbs_g: 150, fat_g: 30, confidence: 'exact' }],
+    });
+    await finishPot(db, pot.id);
+    await reopenPot(db, pot.id);
+
+    const result = await logPotServing(db, { potId: pot.id, date: '2026-08-01', mode: 'tared', scaleReadingG: 200 });
+    expect(result.ok).toBe(true);
+  });
+});
+
+describe('duplicatePotForCookAgain', () => {
+  it('creates an independent new pot with the same name/ingredients and no cooked weight yet', async () => {
+    const db = await freshDb();
+    const original = await createPot(db, {
+      name: 'Chicken curry',
+      totalWeightG: 1000,
+      ingredients: [
+        { name: 'chicken', grams: 500, kcal: 800, protein_g: 90, carbs_g: 0, fat_g: 48, confidence: 'exact' },
+        { name: 'coconut milk', grams: 200, kcal: 400, protein_g: 4, carbs_g: 8, fat_g: 40, confidence: 'high' },
+      ],
+    });
+    await logPotServing(db, { potId: original.id, date: '2026-08-01', mode: 'tared', scaleReadingG: 300 });
+
+    const copy = await duplicatePotForCookAgain(db, original.id, 5000);
+
+    expect(copy.id).not.toBe(original.id);
+    expect(copy.name).toBe('Chicken curry');
+    expect(copy.total_weight_g).toBeNull(); // ready for a fresh cooked weight
+    expect(copy.remaining_g).toBeNull();
+    expect(copy.kcal_per_g).toBeNull();
+    expect(copy.is_active).toBe(1);
+    expect(JSON.parse(copy.ingredients)).toEqual(JSON.parse(original.ingredients));
+
+    // The original is completely untouched — same weight/remaining as
+    // before, same ingredients, same is_active.
+    const rereadOriginal = await potRepo.getPot(db, original.id);
+    expect(rereadOriginal?.total_weight_g).toBe(1000);
+    expect(rereadOriginal?.remaining_g).toBe(700);
+    expect(rereadOriginal?.is_active).toBe(1);
+
+    // The original's already-logged serving is untouched.
+    const entries = await db.getAllAsync<{ pot_id: string; grams: number }>('SELECT pot_id, grams FROM food_entry');
+    expect(entries).toHaveLength(1);
+    expect(entries[0]).toMatchObject({ pot_id: original.id, grams: 300 });
+  });
+
+  it('works on a finished pot — "cook this again" is the whole point of a finished pot being a recipe', async () => {
+    const db = await freshDb();
+    const original = await createPot(db, {
+      name: 'Dal',
+      totalWeightG: 500,
+      ingredients: [{ name: 'lentils', grams: 500, kcal: 600, protein_g: 40, carbs_g: 90, fat_g: 4, confidence: 'exact' }],
+    });
+    await finishPot(db, original.id);
+
+    const copy = await duplicatePotForCookAgain(db, original.id);
+    expect(copy.is_active).toBe(1); // the copy starts fresh, not finished
+    expect(copy.total_weight_g).toBeNull();
+
+    const rereadOriginal = await potRepo.getPot(db, original.id);
+    expect(rereadOriginal?.is_active).toBe(0); // the original stays finished
+  });
+
+  it('throws for an unknown source pot id', async () => {
+    const db = await freshDb();
+    await expect(duplicatePotForCookAgain(db, 'nope')).rejects.toThrow();
+  });
+});
+
+describe('potRemainingStatus', () => {
+  it('reports "Not yet weighed" for a null remaining_g', () => {
+    expect(potRemainingStatusFromFields(null, null)).toEqual({ label: 'Not yet weighed', low: false });
+  });
+
+  it('reports "About empty" (and low: true) at exactly zero — never a bare "0g left"', () => {
+    expect(potRemainingStatusFromFields(0, 1000)).toEqual({ label: 'About empty', low: true });
+  });
+
+  it('reports a plain "Xg left" for a comfortably large remainder', () => {
+    expect(potRemainingStatusFromFields(500, 1000)).toEqual({ label: '500g left', low: false });
+  });
+
+  it('flags "running low" below the absolute floor even for a small original batch', () => {
+    const status = potRemainingStatusFromFields(40, 100);
+    expect(status.low).toBe(true);
+    expect(status.label).toBe('40g left · running low');
+  });
+
+  it('flags "running low" by fraction of the original batch even above the absolute floor', () => {
+    // 200g of a 3000g batch is comfortably above the absolute floor but a
+    // small fraction of a large batch — still worth calling out.
+    const status = potRemainingStatusFromFields(200, 3000);
+    expect(status.low).toBe(true);
+  });
+
+  it('does not flag "running low" for a healthy remainder of an unknown-size batch (total_weight_g null)', () => {
+    // Can happen after totalWeightG is unset via an edit while remaining_g
+    // from before the unset lingers in a stale local copy — defensive.
+    const status = potRemainingStatusFromFields(500, null);
+    expect(status.low).toBe(false);
+  });
+
+  it('potRemainingStatus reads directly off a PotRow', async () => {
+    const db = await freshDb();
+    const pot = await createPot(db, {
+      name: 'Batch',
+      totalWeightG: 1000,
+      ingredients: [{ name: 'x', grams: 1000, kcal: 1500, protein_g: 100, carbs_g: 150, fat_g: 30, confidence: 'exact' }],
+    });
+    expect(potRemainingStatus(pot)).toEqual({ label: '1000g left', low: false });
   });
 });

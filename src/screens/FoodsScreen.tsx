@@ -5,8 +5,16 @@
 //
 // Saved-food search/ranking is entirely foodRepo.searchSavedFood (already
 // orders by use_count DESC, last_used DESC — frequency-ranked per the
-// PRD). Pot serving/decrement/auto-archive logic is entirely potRepo
-// (task brief: "wire it up; do not reimplement") via src/lib/potActions.ts.
+// PRD). Pot serving/decrement logic is entirely potRepo (task brief:
+// "wire it up; do not reimplement") via src/lib/potActions.ts.
+//
+// REWORK ("the pots going to zero thing" — see potRepo.ts's own header for
+// the full reasoning): the Pots tab is now filterable Active/Finished
+// rather than a single always-active list — an archived pot used to be
+// unreachable from any screen, which is the discoverability half of the
+// bug. Reopening a finished pot or duplicating it for "cook this again"
+// both happen from PotLogServingScreen, which every row here (in either
+// filter) navigates to.
 // ═══════════════════════════════════════════════════════════════════════
 
 import { useCallback, useState } from 'react';
@@ -20,14 +28,25 @@ import { getDatabase } from '../lib/db';
 import * as foodRepo from '../db/repositories/foodRepo';
 import * as potRepo from '../db/repositories/potRepo';
 import type { SavedFoodRow, PotRow } from '../db/types';
+import { potRemainingStatus } from '../lib/potActions';
 
 type Nav = NativeStackNavigationProp<RootStackParamList>;
 type Tab = 'foods' | 'pots';
+/**
+ * Task brief #3 ("an archived pot is a recipe... reachable and
+ * reopenable"): pots was previously a single always-active list with no
+ * way to see a finished batch at all. This is the "section in Foods" half
+ * of the fix — the other half (reopen / cook again) lives in
+ * PotLogServingScreen, which this screen navigates every row to either
+ * way.
+ */
+type PotFilter = 'active' | 'finished';
 
 export function FoodsScreen() {
   const navigation = useNavigation<Nav>();
   const insets = useSafeAreaInsets();
   const [tab, setTab] = useState<Tab>('foods');
+  const [potFilter, setPotFilter] = useState<PotFilter>('active');
   const [query, setQuery] = useState('');
   const [foods, setFoods] = useState<SavedFoodRow[]>([]);
   const [pots, setPots] = useState<PotRow[]>([]);
@@ -38,27 +57,32 @@ export function FoodsScreen() {
     setFoods(rows);
   }, []);
 
-  const loadPots = useCallback(async () => {
+  const loadPots = useCallback(async (filter: PotFilter) => {
     const db = await getDatabase();
-    const rows = await potRepo.getActivePots(db);
+    const rows = filter === 'active' ? await potRepo.getActivePots(db) : await potRepo.getArchivedPots(db);
     setPots(rows);
   }, []);
 
   useFocusEffect(
     useCallback(() => {
-      // Re-run with whatever query is currently typed. Deliberately reads
-      // `query` from the enclosing closure rather than listing it as a
-      // dependency: re-running search on every focus with a stale query is
-      // fine (cheap, local-only), and handleQueryChange already re-runs the
-      // search on every keystroke independently of this focus effect.
+      // Re-run with whatever query/filter is currently active. Deliberately
+      // reads them from the enclosing closure rather than listing as
+      // dependencies: re-running on every focus with stale values is fine
+      // (cheap, local-only), and handleQueryChange/setPotFilter already
+      // re-run independently of this focus effect.
       void loadFoods(query);
-      void loadPots();
+      void loadPots(potFilter);
     }, [loadFoods, loadPots])
   );
 
   const handleQueryChange = (text: string) => {
     setQuery(text);
     void loadFoods(text);
+  };
+
+  const handlePotFilterChange = (filter: PotFilter) => {
+    setPotFilter(filter);
+    void loadPots(filter);
   };
 
   return (
@@ -101,14 +125,28 @@ export function FoodsScreen() {
           <Pressable style={styles.createPotButton} onPress={() => navigation.navigate('PotCreate')} accessibilityRole="button">
             <Text style={styles.createPotButtonText}>+ New pot</Text>
           </Pressable>
+          {/* Task brief #3: past (finished) pots are a recipe, not trash —
+              this is the "reachable" half of the fix. Reopening or
+              duplicating a finished pot both happen from the same
+              PotLogServing screen every row here already navigates to. */}
+          <View style={styles.potFilterRow}>
+            <TabButton label="Active" active={potFilter === 'active'} onPress={() => handlePotFilterChange('active')} />
+            <TabButton label="Finished" active={potFilter === 'finished'} onPress={() => handlePotFilterChange('finished')} />
+          </View>
           <FlatList
             data={pots}
             keyExtractor={(item) => item.id}
             contentContainerStyle={styles.listContent}
             renderItem={({ item }) => (
-              <PotRowItem pot={item} onTap={() => navigation.navigate('PotLogServing', { potId: item.id })} />
+              <PotRowItem pot={item} finished={potFilter === 'finished'} onTap={() => navigation.navigate('PotLogServing', { potId: item.id })} />
             )}
-            ListEmptyComponent={<Text style={styles.emptyText}>No active pots — cook a batch and log it here.</Text>}
+            ListEmptyComponent={
+              <Text style={styles.emptyText}>
+                {potFilter === 'active'
+                  ? 'No active pots — cook a batch and log it here.'
+                  : "No finished pots yet — pots you've finished show up here, ready to reopen or cook again."}
+              </Text>
+            }
           />
         </>
       )}
@@ -138,17 +176,25 @@ function SavedFoodRowItem({ food }: { food: SavedFoodRow }) {
   );
 }
 
-function PotRowItem({ pot, onTap }: { pot: PotRow; onTap: () => void }) {
+function PotRowItem({ pot, finished, onTap }: { pot: PotRow; finished: boolean; onTap: () => void }) {
   // A pot can now exist with no cooked weight yet (task brief #1: created
-  // from ingredients alone) — never show a fabricated 0.00 kcal/g or 0g
-  // left, say so honestly instead.
+  // from ingredients alone) — never show a fabricated 0.00 kcal/g, say so
+  // honestly instead. Remaining grams go through potRemainingStatus so
+  // "0g left" never appears as a bare, precise-looking fact (task brief
+  // #3/"the pots going to zero thing") — a FINISHED pot shows that instead
+  // of a remaining-grams figure, since finishing is now an explicit action
+  // independent of whatever remaining_g happens to be.
+  const remaining = potRemainingStatus(pot);
   return (
     <Pressable onPress={onTap} style={({ pressed }) => [styles.row, pressed && styles.rowPressed]} accessibilityRole="button">
       <View style={styles.rowMiddle}>
         <Text style={styles.rowName}>{pot.name}</Text>
         <Text style={styles.rowMeta}>{pot.kcal_per_g !== null ? `${pot.kcal_per_g.toFixed(2)} kcal/g` : 'Not yet weighed'}</Text>
       </View>
-      <Text style={styles.rowGrams}>{pot.remaining_g !== null ? `${Math.round(pot.remaining_g)}g left` : ''}</Text>
+      {/* rowMeta above already says "Not yet weighed" when kcal_per_g is
+          null (which happens exactly when remaining_g is too) — avoid
+          saying it twice in the same row. */}
+      <Text style={styles.rowGrams}>{finished ? 'Finished' : pot.remaining_g !== null ? remaining.label : ''}</Text>
     </Pressable>
   );
 }
@@ -217,6 +263,12 @@ const styles = StyleSheet.create({
   createPotButtonText: {
     ...type.bodyStrong,
     color: colors.accent,
+  },
+  potFilterRow: {
+    flexDirection: 'row',
+    gap: spacing.sm,
+    marginHorizontal: spacing.lg,
+    marginBottom: spacing.sm,
   },
   listContent: {
     paddingHorizontal: spacing.lg,

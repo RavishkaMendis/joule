@@ -53,6 +53,7 @@ import { parseRequiredNumber } from '../lib/numericInput';
 import { generateId } from '../lib/ids';
 import { hasGeminiApiKey, MISSING_KEY_MESSAGE } from '../lib/ai/apiKey';
 import { runLabelOcr } from '../lib/ai/runs';
+import { describeAiFailure } from '../lib/captureJobs/jobReducer';
 import { applyPanelToRow, pendingEntryToDraftParam, potIngredientToDraftParam, resolveBarcodeUpgrade } from '../lib/potActions';
 import type { PotIngredient } from '../db/repositories/potRepo';
 
@@ -139,7 +140,13 @@ export function PotBarcodeAddScreen() {
       // surfaced as `ok: false, reason: 'no_items'` — so `!result.ok` alone
       // covers every failure case here.
       if (!result.ok) {
-        const message = result.reason === 'missing_key' ? MISSING_KEY_MESSAGE : "Couldn't read that label — try again with the per-100g column in frame, or add this ingredient manually.";
+        // Shared exhaustive mapping, not a ternary — see the equivalent
+        // comment in PotIngredientsPhotoScreen for why. `no_items` keeps
+        // its label-specific wording; everything else defers.
+        const message =
+          result.reason === 'no_items'
+            ? "Couldn't read that label — try again with the per-100g column in frame, or add this ingredient manually."
+            : describeAiFailure('label_ocr', result);
         setState({ phase: 'label_error', message });
         return;
       }

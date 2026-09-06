@@ -1,10 +1,14 @@
 // ═══════════════════════════════════════════════════════════════════════
 // GEMINI REST CLIENT
 //
-// Talks to `generativelanguage.googleapis.com` directly via `fetch` — no
+// Talks to `generativelanguage.googleapis.com` via `fetch` — no
 // `@google/generative-ai` or similar SDK dependency (task brief: "use the
 // current Gemini model ids and the REST API directly via fetch; do not
-// add a heavy SDK dependency").
+// add a heavy SDK dependency") — either directly, or fronted by Joule's
+// own Gemini proxy (`proxy/api/gemini.js`, deployed separately) so the
+// real Google key never ships in the app bundle. `apiKey.ts`'s
+// `getGeminiTransport()` decides which; this file just executes whichever
+// transport it's handed. See `callOnce` for the two request shapes.
 //
 // Models (PRD §8): Flash-Lite for label OCR and voice parsing (cheap,
 // fast, plenty for structured single-image/audio extraction); Flash for
@@ -21,8 +25,16 @@
 // of dead-ending the user. This WILL happen again — model ids are not
 // stable — so the chain is the fix, not just the new id.
 //
-// If Google renames/retires these, only this file needs updating — every
-// caller goes through `runLabelOcr` / `runVoiceParse` / `runMealPhoto`.
+// ⚠️ DRIFT HAZARD: `MODEL_FALLBACKS` below is mirrored by `ALLOWED_MODELS`
+// in `proxy/api/gemini.js` (the deployed proxy — read-only from here). If
+// a model is added/removed in one but not the other, the proxy will 400
+// a model this client believes is fine ("Model not permitted by this
+// proxy"), surfaced here as `GeminiCallError.kind === 'model_not_permitted'`.
+// Update both files together.
+//
+// If Google renames/retires these, only this file (and the proxy's
+// mirrored allowlist) needs updating — every caller goes through
+// `runLabelOcr` / `runVoiceParse` / `runMealPhoto`.
 //
 // Structured output (PRD §8): `responseMimeType: application/json` +
 // `responseSchema` forces the shape described in schema.ts. "Reject and
@@ -32,9 +44,20 @@
 // `{ ok: false }` result so the screen can drop to manual entry — this
 // module never throws for the expected "model returned garbage twice"
 // case, only for genuine network/HTTP failures.
+//
+// The proxy passes Google's HTTP status and body through **untouched**
+// (proxy/api/gemini.js's own comment on this is explicit: "the app's
+// fallback chain depends on seeing Google's real model-deprecation
+// 404s"). That means `isModelDeprecationError` and the fallback-walking
+// logic below work identically whether the request went direct or
+// through the proxy — neither needs to know which transport is live.
+// The two errors that ARE proxy-specific (bad/missing token → 401;
+// model rejected by the proxy's own allowlist → 400) are classified in
+// `classifyHttpError`, gated on `transport.kind === 'proxy'` so a
+// same-shaped direct-call error is never misread as one of these.
 // ═══════════════════════════════════════════════════════════════════════
 
-import { getGeminiApiKey } from './apiKey';
+import { getGeminiTransport, type GeminiTransport } from './apiKey';
 import { GEMINI_RESPONSE_SCHEMA, isGeminiStructuredResponse, type GeminiStructuredResponse } from './schema';
 
 export const GEMINI_MODELS = {
@@ -97,8 +120,27 @@ export type GeminiStructuredCallResult =
 export type GeminiCallError =
   | { kind: 'missing_key' }
   | { kind: 'http_error'; status: number; message: string }
+  /** Proxy rejected the request: missing/wrong `x-joule-token`. Only ever produced when `transport.kind === 'proxy'` — a direct call never reaches this (Google's own auth failures don't use bare 401). Distinct from `network_error` on purpose: this is a config/credentials problem on Joule's own proxy, not a connectivity one, and needs a different user action (fix the token) from either "no key" or "can't reach the internet". */
+  | { kind: 'unauthorized'; message: string }
+  /** Proxy's `ALLOWED_MODELS` rejected this model id (its 400 "Model not permitted..." response) — the drift-hazard case documented above: the app thinks a model is fine but the proxy's mirrored allowlist hasn't been updated to match. Also proxy-only. */
+  | { kind: 'model_not_permitted'; message: string }
   | { kind: 'network_error'; message: string }
   | { kind: 'parse_failed_twice'; lastRawText: string };
+
+/**
+ * Reclassifies a raw HTTP failure into the proxy-specific error kinds
+ * above when the shape matches AND the request actually went through the
+ * proxy — gating on `transport.kind` is what keeps a coincidentally
+ * same-shaped direct-call error (Google returning some other 401/400)
+ * from being misattributed to Joule's own proxy.
+ */
+function classifyHttpError(transport: GeminiTransport, status: number, message: string): GeminiCallError {
+  if (transport.kind === 'proxy') {
+    if (status === 401) return { kind: 'unauthorized', message };
+    if (status === 400 && /not permitted/i.test(message)) return { kind: 'model_not_permitted', message };
+  }
+  return { kind: 'http_error', status, message };
+}
 
 /**
  * Calls a Gemini model with a text prompt plus optional inline media —
@@ -117,11 +159,14 @@ export async function callGeminiStructured(
   media?: InlineMediaPart | InlineMediaPart[],
   fetchImpl: typeof fetch = fetch
 ): Promise<GeminiStructuredCallResult> {
-  const apiKey = getGeminiApiKey();
-  if (!apiKey) return { ok: false, error: { kind: 'missing_key' } };
+  const transport = getGeminiTransport();
+  if (!transport) return { ok: false, error: { kind: 'missing_key' } };
 
-  const { result: first, modelUsed } = await callWithModelFallback(modelId, prompt, media, apiKey, fetchImpl);
-  if (first.kind === 'http_error' || first.kind === 'network_error') {
+  const { result: first, modelUsed } = await callWithModelFallback(modelId, prompt, media, transport, fetchImpl);
+  if (first.kind === 'http_error') {
+    return { ok: false, error: classifyHttpError(transport, first.status, first.message) };
+  }
+  if (first.kind === 'network_error') {
     return { ok: false, error: first };
   }
   if (first.kind === 'ok') {
@@ -132,9 +177,12 @@ export async function callGeminiStructured(
   // stricter reminder, per PRD §8.
   const retryPrompt = `${prompt}\n\nIMPORTANT: Your previous response could not be parsed. Respond with ONLY valid JSON matching the required schema — no markdown fences, no commentary, no trailing text.`;
   // Reuse the model that actually answered — no point re-walking the
-  // fallback chain when we already know which id this key can reach.
-  const second = await callOnce(modelUsed, retryPrompt, media, apiKey, fetchImpl);
-  if (second.kind === 'http_error' || second.kind === 'network_error') {
+  // fallback chain when we already know which id this transport can reach.
+  const second = await callOnce(modelUsed, retryPrompt, media, transport, fetchImpl);
+  if (second.kind === 'http_error') {
+    return { ok: false, error: classifyHttpError(transport, second.status, second.message) };
+  }
+  if (second.kind === 'network_error') {
     return { ok: false, error: second };
   }
   if (second.kind === 'ok') {
@@ -168,14 +216,14 @@ async function callWithModelFallback(
   preferredModel: string,
   prompt: string,
   media: InlineMediaPart | InlineMediaPart[] | undefined,
-  apiKey: string,
+  transport: GeminiTransport,
   fetchImpl: typeof fetch
 ): Promise<{ result: CallOnceResult; modelUsed: string }> {
   const candidates = [preferredModel, ...MODEL_FALLBACKS.filter((m) => m !== preferredModel)];
 
   let lastResult: CallOnceResult | null = null;
   for (const candidate of candidates) {
-    const result = await callOnce(candidate, prompt, media, apiKey, fetchImpl);
+    const result = await callOnce(candidate, prompt, media, transport, fetchImpl);
     if (result.kind !== 'http_error' || !isModelDeprecationError(result.status, result.message)) {
       return { result, modelUsed: candidate };
     }
@@ -191,7 +239,7 @@ async function callOnce(
   modelId: string,
   prompt: string,
   media: InlineMediaPart | InlineMediaPart[] | undefined,
-  apiKey: string,
+  transport: GeminiTransport,
   fetchImpl: typeof fetch
 ): Promise<CallOnceResult> {
   const parts: Array<Record<string, unknown>> = [{ text: prompt }];
@@ -200,6 +248,10 @@ async function callOnce(
     parts.push({ inlineData: { mimeType: part.mimeType, data: part.base64Data } });
   }
 
+  // Identical `generateContent` body regardless of transport — the proxy
+  // forwards it verbatim (proxy/api/gemini.js: `{ model, payload }` where
+  // `payload` IS this object), so only the request's envelope (URL,
+  // headers, and where the model id goes) differs below.
   const body = {
     contents: [{ role: 'user', parts }],
     generationConfig: {
@@ -210,11 +262,22 @@ async function callOnce(
 
   let res: Response;
   try {
-    res = await fetchImpl(`${API_BASE}/${modelId}:generateContent?key=${encodeURIComponent(apiKey)}`, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify(body),
-    });
+    if (transport.kind === 'proxy') {
+      // Contract (proxy/api/gemini.js, proxy/README.md): POST the model id
+      // and the untouched generateContent body together; auth is the
+      // `x-joule-token` header, never a URL query param.
+      res = await fetchImpl(transport.config.url, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', 'x-joule-token': transport.config.token },
+        body: JSON.stringify({ model: modelId, payload: body }),
+      });
+    } else {
+      res = await fetchImpl(`${API_BASE}/${modelId}:generateContent?key=${encodeURIComponent(transport.apiKey)}`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(body),
+      });
+    }
   } catch (err) {
     return { kind: 'network_error', message: err instanceof Error ? err.message : String(err) };
   }

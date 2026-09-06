@@ -19,7 +19,19 @@ import { buildLabelOcrPrompt, buildMealPhotoPrompt, buildPotIngredientsPrompt, b
 
 export type AiRunResult =
   | { ok: true; entries: PendingEntry[]; rejectedCount: number }
-  | { ok: false; reason: 'missing_key' | 'network' | 'parse_failed' | 'no_items'; detail?: string };
+  | {
+      ok: false;
+      reason:
+        | 'missing_key'
+        | 'network'
+        | 'parse_failed'
+        | 'no_items'
+        /** Proxy rejected the request's `x-joule-token` (bad/missing) — a config problem on this device's proxy setup, distinct from "no key at all" or "can't reach the network". Only ever produced when a proxy is configured (see apiKey.ts). */
+        | 'proxy_unauthorized'
+        /** Proxy's model allowlist doesn't include the model this client tried to use — the drift hazard documented in geminiClient.ts, surfaced honestly instead of collapsing into a generic network failure. */
+        | 'proxy_model_not_permitted';
+      detail?: string;
+    };
 
 /** PRD §7.3 label OCR: one nutrition-panel photo in, one entry out (usually). */
 export async function runLabelOcr(photoBase64: string, mimeType = 'image/jpeg'): Promise<AiRunResult> {
@@ -139,6 +151,10 @@ function finishRun(
         return { ok: false, reason: 'parse_failed', detail: result.error.lastRawText };
       case 'http_error':
         return { ok: false, reason: 'network', detail: `HTTP ${result.error.status}: ${result.error.message}` };
+      case 'unauthorized':
+        return { ok: false, reason: 'proxy_unauthorized', detail: result.error.message };
+      case 'model_not_permitted':
+        return { ok: false, reason: 'proxy_model_not_permitted', detail: result.error.message };
       case 'network_error':
         return { ok: false, reason: 'network', detail: result.error.message };
     }

@@ -31,6 +31,7 @@ import type { PotIngredientDraftParam, RootStackParamList } from '../lib/navigat
 import { colors, minTouchTarget, radii, spacing, type } from '../lib/theme';
 import { hasGeminiApiKey, MISSING_KEY_MESSAGE } from '../lib/ai/apiKey';
 import { runPotIngredientsPhoto } from '../lib/ai/runs';
+import { describeAiFailure } from '../lib/captureJobs/jobReducer';
 import { generateId } from '../lib/ids';
 import { pendingEntryToDraftParam } from '../lib/potActions';
 
@@ -53,12 +54,18 @@ export function PotIngredientsPhotoScreen() {
       const result = await runPotIngredientsPhoto(base64);
 
       if (!result.ok) {
+        // Use the shared, EXHAUSTIVE mapping rather than a local ternary
+        // chain. A ternary silently collapses any unhandled reason into
+        // the generic network message — which is exactly what happened
+        // when the proxy transport added `proxy_unauthorized` and
+        // `proxy_model_not_permitted`: a token misconfiguration would
+        // have told the user to check their connection. `describeAiFailure`
+        // is a switch over the full union, so a future reason is a compile
+        // error here instead of a quietly wrong message.
         const message =
-          result.reason === 'missing_key'
-            ? MISSING_KEY_MESSAGE
-            : result.reason === 'no_items'
-              ? "Couldn't make out any ingredients in that photo — try again with better light, or add them manually."
-              : "Couldn't reach Gemini — check your connection and try again.";
+          result.reason === 'no_items'
+            ? "Couldn't make out any ingredients in that photo — try again with better light, or add them manually."
+            : describeAiFailure('meal_photo', result);
         setPhase({ phase: 'error', message });
         return;
       }

@@ -69,7 +69,11 @@ describe('potRepo', () => {
     expect(day?.kcal).toBeCloseTo(450, 5);
   });
 
-  it('auto-archives the pot when a serving empties it exactly', async () => {
+  // REWORK ("the pots going to zero thing"): reaching zero remaining is a
+  // STATE, not a cliff — a pot stays active/reachable, and only an
+  // explicit archivePot() call ever sets is_active = 0. See potRepo.ts's
+  // own header for the full reasoning.
+  it('floors remaining_g at 0 when a serving empties it exactly, without archiving the pot', async () => {
     await potRepo.createPot(db, {
       id: 'pot1',
       name: 'Small batch',
@@ -87,13 +91,19 @@ describe('potRepo', () => {
     });
 
     expect(pot.remaining_g).toBe(0);
-    expect(pot.is_active).toBe(0);
+    expect(pot.is_active).toBe(1);
 
     const active = await potRepo.getActivePots(db);
-    expect(active).toHaveLength(0);
+    expect(active).toHaveLength(1);
   });
 
-  it('clamps an over-large serving to what remains rather than going negative', async () => {
+  // OVERRUN FIX (task brief: "serving more than the computed remainder is
+  // entirely normal... never a refusal to log food the user actually
+  // ate"). The scale reading — what was actually weighed — now logs in
+  // full; only the pot's own (computed, not measured) remaining_g estimate
+  // floors at 0 rather than going negative. This used to silently clamp
+  // entry.grams to 200, under-logging 300g of real food with no error.
+  it('logs the full serving even when it exceeds the computed remainder, flooring remaining_g at 0 without archiving', async () => {
     await potRepo.createPot(db, {
       id: 'pot1',
       name: 'Small batch',
@@ -104,15 +114,16 @@ describe('potRepo', () => {
 
     const { entry, pot } = await potRepo.logServing(db, {
       potId: 'pot1',
-      grams: 500, // more than remains
+      grams: 500, // more than the computed remainder — the batch was plainly bigger
       entryId: 'serve1',
       date: '2026-08-01',
       loggedAt: 2000,
     });
 
-    expect(pot.remaining_g).toBe(0);
-    expect(pot.is_active).toBe(0);
-    expect(entry.grams).toBe(200); // clamped
+    expect(pot.remaining_g).toBe(0); // never negative
+    expect(pot.is_active).toBe(1); // overrun never finishes the pot on its own
+    expect(entry.grams).toBe(500); // the full weighed amount, not clamped
+    expect(entry.kcal).toBeCloseTo(500 * 1.5, 5); // 500g * 300kcal/200g
   });
 
   it('refuses to log a serving from an archived pot', async () => {
@@ -128,6 +139,53 @@ describe('potRepo', () => {
     await expect(
       potRepo.logServing(db, { potId: 'pot1', grams: 10, entryId: 'e', date: '2026-08-01', loggedAt: 1 })
     ).rejects.toThrow();
+  });
+
+  describe('archivePot / reopenPot / getArchivedPots', () => {
+    it('archivePot is the ONLY thing that moves a pot from active to archived, and is idempotent', async () => {
+      await potRepo.createPot(db, {
+        id: 'pot1',
+        name: 'Batch',
+        created_at: 1000,
+        total_weight_g: 100,
+        ingredients: [{ name: 'x', grams: 100, kcal: 100, protein_g: 10, carbs_g: 10, fat_g: 2 }],
+      });
+
+      const archived = await potRepo.archivePot(db, 'pot1');
+      expect(archived.is_active).toBe(0);
+      expect(await potRepo.getActivePots(db)).toHaveLength(0);
+      expect(await potRepo.getArchivedPots(db)).toHaveLength(1);
+
+      // Idempotent — archiving an already-archived pot is a no-op, not an error.
+      const archivedAgain = await potRepo.archivePot(db, 'pot1');
+      expect(archivedAgain.is_active).toBe(0);
+    });
+
+    it('reopenPot is the exact reverse, also idempotent, and never touches remaining_g', async () => {
+      await potRepo.createPot(db, {
+        id: 'pot1',
+        name: 'Batch',
+        created_at: 1000,
+        total_weight_g: 100,
+        ingredients: [{ name: 'x', grams: 100, kcal: 100, protein_g: 10, carbs_g: 10, fat_g: 2 }],
+      });
+      await potRepo.logServing(db, { potId: 'pot1', grams: 40, entryId: 'e1', date: '2026-08-01', loggedAt: 1 });
+      await potRepo.archivePot(db, 'pot1');
+
+      const reopened = await potRepo.reopenPot(db, 'pot1');
+      expect(reopened.is_active).toBe(1);
+      expect(reopened.remaining_g).toBe(60); // untouched by archive/reopen
+
+      const reopenedAgain = await potRepo.reopenPot(db, 'pot1');
+      expect(reopenedAgain.is_active).toBe(1);
+
+      expect(await potRepo.getActivePots(db)).toHaveLength(1);
+      expect(await potRepo.getArchivedPots(db)).toHaveLength(0);
+    });
+
+    it('archivePot throws for an unknown pot id', async () => {
+      await expect(potRepo.archivePot(db, 'nope')).rejects.toThrow();
+    });
   });
 
   // Task brief #1: "The total weight is not needed... because I add the

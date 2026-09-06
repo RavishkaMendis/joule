@@ -285,3 +285,167 @@ describe('model deprecation fallback', () => {
     expect(result.error.message).toContain('no longer available');
   });
 });
+
+// ═══════════════════════════════════════════════════════════════════════
+// PROXY TRANSPORT — PRD §8 build-order item 17: route through
+// proxy/api/gemini.js (deployed separately) instead of Google directly,
+// once EXPO_PUBLIC_JOULE_PROXY_URL/TOKEN are set. Precedence per task
+// brief: proxy wins when configured; the direct-key tests above (no
+// proxy vars set) prove the fallback to direct calling still works
+// unchanged. Every case here uses a fake `fetch` — never the live proxy
+// or Google.
+// ═══════════════════════════════════════════════════════════════════════
+
+describe('proxy transport', () => {
+  const ORIGINAL_PROXY_URL = process.env.EXPO_PUBLIC_JOULE_PROXY_URL;
+  const ORIGINAL_PROXY_TOKEN = process.env.EXPO_PUBLIC_JOULE_PROXY_TOKEN;
+
+  afterEach(() => {
+    process.env.EXPO_PUBLIC_GEMINI_API_KEY = ORIGINAL_ENV;
+    process.env.EXPO_PUBLIC_JOULE_PROXY_URL = ORIGINAL_PROXY_URL;
+    process.env.EXPO_PUBLIC_JOULE_PROXY_TOKEN = ORIGINAL_PROXY_TOKEN;
+  });
+
+  function validItemsJson() {
+    return JSON.stringify({
+      items: [
+        {
+          name: 'Rice',
+          grams: 100,
+          kcal_per_100g: 130,
+          energy_unit_detected: 'kcal',
+          protein_per_100g: 2.7,
+          carbs_per_100g: 28,
+          fat_per_100g: 0.3,
+          confidence: 'high',
+          assumptions: '',
+        },
+      ],
+    });
+  }
+
+  it('sends the exact proxy contract: POST to the configured URL, x-joule-token header, { model, payload } body', async () => {
+    delete process.env.EXPO_PUBLIC_GEMINI_API_KEY;
+    process.env.EXPO_PUBLIC_JOULE_PROXY_URL = 'https://proxy.example/api/gemini';
+    process.env.EXPO_PUBLIC_JOULE_PROXY_TOKEN = 'shared-token';
+    const fetchImpl = fakeFetchSequence([{ ok: true, json: async () => geminiEnvelope(validItemsJson()) }]);
+
+    const result = await callGeminiStructured('gemini-3.6-flash', 'prompt', undefined, fetchImpl);
+
+    expect(result.ok).toBe(true);
+    expect(fetchImpl).toHaveBeenCalledTimes(1);
+    const [url, init] = (fetchImpl as jest.Mock).mock.calls[0];
+    expect(url).toBe('https://proxy.example/api/gemini');
+    expect(init.method).toBe('POST');
+    expect(init.headers).toMatchObject({ 'Content-Type': 'application/json', 'x-joule-token': 'shared-token' });
+    const sent = JSON.parse(init.body as string);
+    expect(sent.model).toBe('gemini-3.6-flash');
+    // The untouched generateContent body lives under `payload`, exactly
+    // what a direct call would have sent as its own top-level body.
+    expect(sent.payload.contents[0].parts[0]).toEqual({ text: 'prompt' });
+    expect(sent.payload.generationConfig.responseMimeType).toBe('application/json');
+    // Never a URL query param for the proxy — the token is header-only.
+    expect(url).not.toContain('shared-token');
+  });
+
+  it('prefers the proxy over a direct key when both are configured', async () => {
+    process.env.EXPO_PUBLIC_GEMINI_API_KEY = 'direct-key';
+    process.env.EXPO_PUBLIC_JOULE_PROXY_URL = 'https://proxy.example/api/gemini';
+    process.env.EXPO_PUBLIC_JOULE_PROXY_TOKEN = 'shared-token';
+    const fetchImpl = fakeFetchSequence([{ ok: true, json: async () => geminiEnvelope(validItemsJson()) }]);
+
+    await callGeminiStructured('gemini-3.6-flash', 'prompt', undefined, fetchImpl);
+
+    const [url, init] = (fetchImpl as jest.Mock).mock.calls[0];
+    expect(url).toBe('https://proxy.example/api/gemini');
+    expect(String(init.body)).not.toContain('direct-key');
+  });
+
+  it('treats a half-configured proxy (token but no URL) as not configured and falls back to direct', async () => {
+    process.env.EXPO_PUBLIC_GEMINI_API_KEY = 'direct-key';
+    delete process.env.EXPO_PUBLIC_JOULE_PROXY_URL;
+    process.env.EXPO_PUBLIC_JOULE_PROXY_TOKEN = 'shared-token';
+    const fetchImpl = fakeFetchSequence([{ ok: true, json: async () => geminiEnvelope(validItemsJson()) }]);
+
+    await callGeminiStructured('gemini-3.6-flash', 'prompt', undefined, fetchImpl);
+
+    const [url] = (fetchImpl as jest.Mock).mock.calls[0];
+    expect(String(url)).toContain('generativelanguage.googleapis.com');
+    expect(String(url)).toContain('direct-key');
+  });
+
+  it("surfaces a proxy 401 as its own distinct 'unauthorized' error, not a generic network failure", async () => {
+    delete process.env.EXPO_PUBLIC_GEMINI_API_KEY;
+    process.env.EXPO_PUBLIC_JOULE_PROXY_URL = 'https://proxy.example/api/gemini';
+    process.env.EXPO_PUBLIC_JOULE_PROXY_TOKEN = 'wrong-token';
+    const fetchImpl = fakeFetchSequence([{ ok: false, status: 401, json: async () => ({ error: { message: 'Unauthorized.' } }) }]);
+
+    const result = await callGeminiStructured('gemini-3.6-flash', 'prompt', undefined, fetchImpl);
+
+    expect(result.ok).toBe(false);
+    if (result.ok) return;
+    expect(result.error.kind).toBe('unauthorized');
+    expect(result.error.kind).not.toBe('network_error');
+    expect(result.error.kind).not.toBe('http_error');
+    // A single 401 isn't a per-model deprecation — must not walk the fallback chain.
+    expect(fetchImpl).toHaveBeenCalledTimes(1);
+  });
+
+  it("surfaces the proxy's 400 'Model not permitted' as its own distinct error", async () => {
+    delete process.env.EXPO_PUBLIC_GEMINI_API_KEY;
+    process.env.EXPO_PUBLIC_JOULE_PROXY_URL = 'https://proxy.example/api/gemini';
+    process.env.EXPO_PUBLIC_JOULE_PROXY_TOKEN = 'shared-token';
+    const fetchImpl = fakeFetchSequence([
+      { ok: false, status: 400, json: async () => ({ error: { message: 'Model not permitted by this proxy: gemini-9000' } }) },
+    ]);
+
+    const result = await callGeminiStructured('gemini-9000', 'prompt', undefined, fetchImpl);
+
+    expect(result.ok).toBe(false);
+    if (result.ok) return;
+    expect(result.error.kind).toBe('model_not_permitted');
+    if (result.error.kind !== 'model_not_permitted') return;
+    expect(result.error.message).toContain('gemini-9000');
+  });
+
+  it('a direct-call 401 is never misclassified as the proxy-specific unauthorized error', async () => {
+    process.env.EXPO_PUBLIC_GEMINI_API_KEY = 'bad-key';
+    delete process.env.EXPO_PUBLIC_JOULE_PROXY_URL;
+    delete process.env.EXPO_PUBLIC_JOULE_PROXY_TOKEN;
+    const fetchImpl = fakeFetchSequence([{ ok: false, status: 401, json: async () => ({ error: { message: 'API key not valid' } }) }]);
+
+    const result = await callGeminiStructured('gemini-3.6-flash', 'prompt', undefined, fetchImpl);
+
+    expect(result.ok).toBe(false);
+    if (result.ok) return;
+    expect(result.error.kind).toBe('http_error');
+  });
+
+  it('walks the model-deprecation fallback chain through the proxy exactly like a direct call', async () => {
+    delete process.env.EXPO_PUBLIC_GEMINI_API_KEY;
+    process.env.EXPO_PUBLIC_JOULE_PROXY_URL = 'https://proxy.example/api/gemini';
+    process.env.EXPO_PUBLIC_JOULE_PROXY_TOKEN = 'shared-token';
+    const fetchImpl = fakeFetchSequence([
+      {
+        ok: false,
+        status: 404,
+        json: async () => ({
+          error: { message: 'This model models/gemini-2.5-flash is no longer available to new users.' },
+        }),
+      },
+      { ok: true, json: async () => geminiEnvelope(validItemsJson()) },
+    ]);
+
+    const result = await callGeminiStructured('gemini-2.5-flash', 'prompt', undefined, fetchImpl);
+
+    expect(result.ok).toBe(true);
+    expect(fetchImpl).toHaveBeenCalledTimes(2);
+    // Both calls go to the same proxy URL (unlike a direct call, the
+    // model id moves in the JSON body, not the URL) — inspect the body
+    // of each call to confirm the fallback candidate actually changed.
+    const firstModel = JSON.parse((fetchImpl as jest.Mock).mock.calls[0][1].body as string).model;
+    const secondModel = JSON.parse((fetchImpl as jest.Mock).mock.calls[1][1].body as string).model;
+    expect(firstModel).toBe('gemini-2.5-flash');
+    expect(secondModel).not.toBe('gemini-2.5-flash');
+  });
+});

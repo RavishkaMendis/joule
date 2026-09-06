@@ -29,6 +29,22 @@
 // kcal_per_g inherits whatever uncertainty its ingredients were entered
 // with, so it stops one rung short of 'exact' (reserved for a scanned
 // nutrition panel).
+//
+// REWORK ("the pots going to zero thing" — see potRepo.ts's own header):
+// this screen now has FOUR states instead of two, keyed off `pot.is_active`
+// and `isWeighedPot(pot)`:
+//   1. Finished (`!pot.is_active`) — the pot's own numbers, honest even
+//      with no food physically left, plus "Reopen this pot" / "Cook this
+//      again". A pot getting here is never a dead end.
+//   2. Active, not yet weighed — unchanged "weigh this pot first" capture.
+//   3. Active, weighed — the serving form, now showing an honest
+//      "About empty"/"running low" remaining status instead of a bare
+//      "0g remaining", and a neutral (never scolding) note when the typed
+//      reading exceeds the pot's own estimate — the full amount still logs.
+//   4. Every active state also offers "Finish this pot" (`finishLink`,
+//      next to "Edit pot") — the ONLY way a pot becomes archived now; see
+//      potRepo.archivePot's own doc for why this replaced the old
+//      "auto-archive when the arithmetic hits zero" behavior.
 // ═══════════════════════════════════════════════════════════════════════
 
 import { useCallback, useEffect, useState } from 'react';
@@ -56,6 +72,10 @@ import {
   isFatPlausibilityNoteDismissed,
   dismissFatPlausibilityNote,
   isWeighedPot,
+  finishPot,
+  reopenPot,
+  duplicatePotForCookAgain,
+  potRemainingStatus,
   FAT_PLAUSIBILITY_NOTE,
   type ServingWeighMode,
 } from '../lib/potActions';
@@ -87,6 +107,13 @@ export function PotLogServingScreen() {
   // "weigh a serving" never cross-contaminates the two numbers.
   const [cookedWeightText, setCookedWeightText] = useState('');
   const [settingWeight, setSettingWeight] = useState(false);
+
+  // Finish / reopen / cook-again (task brief: "finished" is an explicit
+  // action, and archive must be reversible and reachable). One busy flag
+  // covers all three — they're mutually exclusive, never triggered from
+  // the same tap, and none of them needs its own loading text beyond
+  // disabling the buttons for the moment the write takes.
+  const [potActionBusy, setPotActionBusy] = useState(false);
 
   // Fat-plausibility note (task brief "Also" section) — dismissal is
   // per-pot and persisted, so `null` means "not loaded yet" (render
@@ -145,6 +172,58 @@ export function PotLogServingScreen() {
       setCookedWeightText('');
     } finally {
       setSettingWeight(false);
+    }
+  };
+
+  /**
+   * "I've finished this pot" (task brief: explicit action, never an
+   * arithmetic threshold). Available regardless of remaining_g — a pot
+   * can be finished with food still left in it (moving on to a new
+   * dish) exactly as validly as one that's genuinely empty.
+   */
+  const handleFinishPot = async () => {
+    if (!pot || potActionBusy) return;
+    setPotActionBusy(true);
+    try {
+      const db = await getDatabase();
+      const updated = await finishPot(db, pot.id);
+      setPot(updated);
+    } finally {
+      setPotActionBusy(false);
+    }
+  };
+
+  /** The explicit reverse — "there's actually more in this" / picking a finished pot back up. */
+  const handleReopenPot = async () => {
+    if (!pot || potActionBusy) return;
+    setPotActionBusy(true);
+    try {
+      const db = await getDatabase();
+      const updated = await reopenPot(db, pot.id);
+      setPot(updated);
+    } finally {
+      setPotActionBusy(false);
+    }
+  };
+
+  /**
+   * "Cook this again" (task brief: "an old pot is a recipe... the single
+   * most valuable thing here"). Creates a brand new, independent pot with
+   * the same name/ingredients and no cooked weight yet, then replaces this
+   * screen with THAT pot — landing straight in the existing "weigh this
+   * pot first" capture flow, since a fresh batch needs a fresh weigh-in.
+   * Never touches this (the source) pot or anything already logged
+   * against it.
+   */
+  const handleCookAgain = async () => {
+    if (!pot || potActionBusy) return;
+    setPotActionBusy(true);
+    try {
+      const db = await getDatabase();
+      const created = await duplicatePotForCookAgain(db, pot.id);
+      navigation.replace('PotLogServing', { potId: created.id });
+    } finally {
+      setPotActionBusy(false);
     }
   };
 
@@ -254,6 +333,76 @@ export function PotLogServingScreen() {
     </Pressable>
   );
 
+  // Task brief: "an archived pot is a recipe... reachable and reopenable."
+  // A finished pot no longer disappears from the app — it lands here with
+  // its own view: the batch's own numbers (honest whether or not there was
+  // anything physically left when it was finished) and the two actions
+  // that matter for a repeat-cook household — pick it back up, or start a
+  // fresh batch of the same recipe.
+  if (!pot.is_active) {
+    const totals = potIngredientTotals(pot);
+    const remaining = potRemainingStatus(pot);
+    return (
+      <KeyboardAvoidingView style={styles.screen} behavior={Platform.OS === 'ios' ? 'padding' : undefined}>
+        <ScrollView contentContainerStyle={styles.content} keyboardShouldPersistTaps="handled" keyboardDismissMode="on-drag">
+          <View style={styles.titleRow}>
+            <Text style={styles.title}>{pot.name}</Text>
+            {editLink}
+          </View>
+          <Text style={styles.subtitle}>
+            Finished{pot.remaining_g !== null ? ` · ${remaining.label} when it was finished` : ''}
+            {pot.kcal_per_g !== null ? ` · ${pot.kcal_per_g.toFixed(2)} kcal/g` : ''}
+          </Text>
+          {totals.kcal > 0 && (
+            <Text style={styles.subtitle}>
+              Batch total: {Math.round(totals.kcal)} kcal · P{Math.round(totals.protein_g)} C{Math.round(totals.carbs_g)} F
+              {Math.round(totals.fat_g)}
+            </Text>
+          )}
+          {confidenceSummary.totalKcal > 0 && <Text style={styles.confidenceSummary}>{formatPotConfidence(confidenceSummary)}</Text>}
+
+          <Text style={styles.needsWeightNotice}>
+            This pot is finished, but it&apos;s still here — nothing about it was deleted. Reopen it if there&apos;s
+            actually more left, or cook the same recipe again with a fresh batch.
+          </Text>
+
+          <Pressable
+            onPress={() => void handleCookAgain()}
+            disabled={potActionBusy}
+            style={[styles.primaryActionButton, potActionBusy && styles.saveButtonDisabled]}
+            accessibilityRole="button"
+          >
+            <Text style={styles.primaryActionText}>Cook this again</Text>
+          </Pressable>
+          <Pressable
+            onPress={() => void handleReopenPot()}
+            disabled={potActionBusy}
+            style={[styles.secondaryButton, potActionBusy && styles.saveButtonDisabled]}
+            accessibilityRole="button"
+          >
+            <Text style={styles.secondaryButtonText}>Reopen this pot</Text>
+          </Pressable>
+
+          <View style={styles.actions}>
+            <Pressable onPress={() => navigation.goBack()} style={styles.cancelButton} accessibilityRole="button">
+              <Text style={styles.cancelText}>Back</Text>
+            </Pressable>
+          </View>
+        </ScrollView>
+      </KeyboardAvoidingView>
+    );
+  }
+
+  // Reaching this point means `pot.is_active` — the archived branch above
+  // already returned otherwise. "Finish this pot" is offered from here on
+  // regardless of whether it's been weighed yet or how much is left
+  // (task brief: an explicit action, never inferred from remaining_g).
+  const finishLink = (
+    <Pressable onPress={() => void handleFinishPot()} disabled={potActionBusy} accessibilityRole="button" hitSlop={8}>
+      <Text style={styles.editLink}>Finish pot</Text>
+    </Pressable>
+  );
+
   // Task brief #1: "Capture the cooked weight at first serve if it's
   // missing — that's when the user is already holding a scale." A pot
   // created from ingredients alone has no kcal_per_g yet, so there's
@@ -267,7 +416,10 @@ export function PotLogServingScreen() {
         <ScrollView contentContainerStyle={styles.content} keyboardShouldPersistTaps="handled" keyboardDismissMode="on-drag">
           <View style={styles.titleRow}>
             <Text style={styles.title}>{pot.name}</Text>
-            {editLink}
+            <View style={styles.titleLinks}>
+              {editLink}
+              {finishLink}
+            </View>
           </View>
           {totals.kcal > 0 && (
             <Text style={styles.subtitle}>
@@ -323,9 +475,16 @@ export function PotLogServingScreen() {
       <ScrollView contentContainerStyle={styles.content} keyboardShouldPersistTaps="handled" keyboardDismissMode="on-drag">
         <View style={styles.titleRow}>
           <Text style={styles.title}>{pot.name}</Text>
-          {editLink}
+          <View style={styles.titleLinks}>
+            {editLink}
+            {finishLink}
+          </View>
         </View>
-        <Text style={styles.subtitle}>{Math.round(pot.remaining_g)}g remaining · {pot.kcal_per_g.toFixed(2)} kcal/g</Text>
+        {/* Honest remaining status (task brief: "running low is a state,
+            not a cliff" / "show remaining honestly, including 'about
+            empty'") — never a bare, precise-looking "0g remaining" for a
+            number that was only ever a computed estimate. */}
+        <Text style={styles.subtitle}>{potRemainingStatus(pot).label} · {pot.kcal_per_g.toFixed(2)} kcal/g</Text>
         {/* The pot's own honesty (task brief): how much of THIS pot's
             calories are backed by a scanned/database match, right where
             the user is about to trust a serving estimate from it. */}
@@ -487,6 +646,21 @@ export function PotLogServingScreen() {
           </Text>
         )}
 
+        {/* Overrun (task brief: "serving more than the computed remainder
+            is entirely normal... never a refusal to log food the user
+            actually ate, and no scolding"). Purely informational, same
+            neutral tone as every other honesty note on this screen — the
+            scale wins and the full amount above logs regardless; this
+            just explains why the pot's own estimate is about to floor at
+            zero rather than go negative. */}
+        {netGrams !== null && netGrams > pot.remaining_g && (
+          <Text style={styles.hintSmall}>
+            That&apos;s more than this pot&apos;s estimated {Math.round(pot.remaining_g)}g left — the batch was
+            plainly bigger than the estimate. The full amount above will be logged; the pot&apos;s own estimate will
+            read as about empty afterwards.
+          </Text>
+        )}
+
         {weighResult?.ok === false && weighResult.reason === 'net_not_positive' && (
           <Text style={styles.errorText}>That container weight looks too high for this reading.</Text>
         )}
@@ -543,6 +717,10 @@ const styles = StyleSheet.create({
   editLink: {
     ...type.caption,
     color: colors.accent,
+  },
+  titleLinks: {
+    flexDirection: 'row',
+    gap: spacing.md,
   },
   subtitle: {
     ...type.caption,
@@ -753,5 +931,36 @@ const styles = StyleSheet.create({
   saveText: {
     ...type.bodyStrong,
     color: colors.background,
+  },
+  // Standalone full-width actions for the finished-pot view — deliberately
+  // separate from saveButton/cancelButton above (those live inline inside
+  // a flexDirection: 'row' actions bar; these two are the primary content
+  // of their own screen state, so they get the full-width, minTouchTarget
+  // treatment instead).
+  primaryActionButton: {
+    marginTop: spacing.lg,
+    minHeight: minTouchTarget,
+    alignItems: 'center',
+    justifyContent: 'center',
+    backgroundColor: colors.accent,
+    borderRadius: radii.sm,
+  },
+  primaryActionText: {
+    ...type.bodyStrong,
+    color: colors.background,
+  },
+  secondaryButton: {
+    marginTop: spacing.sm,
+    minHeight: minTouchTarget,
+    alignItems: 'center',
+    justifyContent: 'center',
+    backgroundColor: colors.surface,
+    borderRadius: radii.sm,
+    borderWidth: StyleSheet.hairlineWidth,
+    borderColor: colors.border,
+  },
+  secondaryButtonText: {
+    ...type.bodyStrong,
+    color: colors.accent,
   },
 });

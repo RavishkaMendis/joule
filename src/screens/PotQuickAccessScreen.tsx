@@ -29,6 +29,7 @@ import { colors, minTouchTarget, numeric, radii, spacing, type } from '../lib/th
 import { getDatabase } from '../lib/db';
 import * as potRepo from '../db/repositories/potRepo';
 import type { PotRow } from '../db/types';
+import { potRemainingStatus } from '../lib/potActions';
 
 type Nav = NativeStackNavigationProp<RootStackParamList, 'PotQuickAccess'>;
 
@@ -86,7 +87,9 @@ export function PotQuickAccessScreen() {
                   0.00 kcal/g, say so honestly instead. */}
               <Text style={styles.rowMeta}>{item.kcal_per_g !== null ? `${item.kcal_per_g.toFixed(2)} kcal/g` : 'Not yet weighed'}</Text>
             </View>
-            <Text style={styles.rowGrams}>{item.remaining_g !== null ? `${Math.round(item.remaining_g)}g left` : ''}</Text>
+            {/* rowMeta above already says "Not yet weighed" for a null
+                remaining_g — avoid saying it twice in the same row. */}
+            <Text style={styles.rowGrams}>{item.remaining_g !== null ? potRemainingStatus(item).label : ''}</Text>
           </Pressable>
         )}
       />

@@ -142,4 +142,19 @@ describe('describeAiFailure', () => {
   it('gives the parse_failed message', () => {
     expect(describeAiFailure('voice', failure('parse_failed'))).toMatch(/couldn't be understood/i);
   });
+
+  it('gives a distinct token-specific message for proxy_unauthorized, never the generic network copy', () => {
+    const message = describeAiFailure('label_ocr', failure('proxy_unauthorized'));
+    expect(message).toMatch(/token/i);
+    expect(message).not.toMatch(/check your connection/i);
+  });
+
+  it('gives a distinct allowlist-specific message for proxy_model_not_permitted, surfacing the detail', () => {
+    const message = describeAiFailure(
+      'label_ocr',
+      failure('proxy_model_not_permitted', 'Model not permitted by this proxy: gemini-9000')
+    );
+    expect(message).toMatch(/proxy/i);
+    expect(message).toContain('gemini-9000');
+  });
 });

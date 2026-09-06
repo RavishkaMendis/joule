@@ -67,6 +67,59 @@ export async function updatePot(db: Database, input: UpdatePotInput): Promise<Po
   });
 }
 
+// ─────────────────────────────────────────────────────────────────────────
+// FINISH / REOPEN — thin id-free passthroughs to potRepo's explicit
+// archive/reopen (task brief: "finished" is a user action, never an
+// inferred arithmetic threshold — see potRepo.archivePot/reopenPot's own
+// docs for the full reasoning). Kept as one-line wrappers rather than
+// calling potRepo directly from screens purely for symmetry with every
+// other pot mutation in this file (createPot/updatePot/logPotServing all
+// go through potActions, never potRepo, from a screen).
+// ─────────────────────────────────────────────────────────────────────────
+
+/** Marks a pot finished. Idempotent; never touches remaining_g/ingredients. */
+export async function finishPot(db: Database, potId: string): Promise<PotRow> {
+  return potRepo.archivePot(db, potId);
+}
+
+/** Reopens a finished pot — the explicit "there's actually more in this" / "put it back on the active list" action. Idempotent. */
+export async function reopenPot(db: Database, potId: string): Promise<PotRow> {
+  return potRepo.reopenPot(db, potId);
+}
+
+// ─────────────────────────────────────────────────────────────────────────
+// "COOK THIS AGAIN" (task brief: "an old pot is a recipe... the single
+// most valuable thing here for someone who meal-preps weekly"). Duplicates
+// ANY pot — finished or still active — into a brand new, fully independent
+// pot: same name and ingredients, but `total_weight_g`/`remaining_g` reset
+// to null ("ready for a fresh cooked weight" — a new batch of the same
+// recipe is never assumed to weigh the same as the last one, and PotLogServingScreen
+// already has a well-tested "weigh this pot first" capture flow for
+// exactly this state, so the new pot lands straight in it rather than
+// needing a second one built).
+//
+// Built entirely on `potRepo.createPot` (never a second write path) with a
+// freshly generated id/created_at, so the source pot's row, its
+// ingredients JSON, and every food_entry already logged against it are
+// left completely untouched — this is a copy, never a move.
+// ─────────────────────────────────────────────────────────────────────────
+
+/**
+ * Reads back `sourcePotId`'s current name/ingredients and creates a new,
+ * independent pot from them with no cooked weight yet. Throws if the
+ * source pot doesn't exist (a screen should only ever offer this action
+ * for a pot it already has loaded).
+ */
+export async function duplicatePotForCookAgain(db: Database, sourcePotId: string, createdAt: number = Date.now()): Promise<PotRow> {
+  const source = await potRepo.getPot(db, sourcePotId);
+  if (!source) throw new Error(`duplicatePotForCookAgain: no pot with id ${sourcePotId}`);
+  return createPot(
+    db,
+    { name: source.name, totalWeightG: null, ingredients: parsePotIngredients(source) },
+    createdAt
+  );
+}
+
 /**
  * Sets (or corrects) just a pot's cooked weight, keeping its name and
  * ingredients exactly as they are — the "capture the cooked weight at
@@ -529,6 +582,45 @@ export function isWeighedPot(pot: PotRow): pot is WeighedPotRow {
     pot.carbs_per_g !== null &&
     pot.fat_per_g !== null
   );
+}
+
+// ─────────────────────────────────────────────────────────────────────────
+// HONEST "REMAINING" DISPLAY (task brief: "running low is a state, not a
+// cliff... show remaining honestly (including 'about empty') rather than
+// removing it the instant arithmetic says zero"). One formatter shared by
+// every screen/component that renders `remaining_g`, so "0g left" (which
+// reads like a hard, precise fact about a number that was never more than
+// an estimate) never appears anywhere in this app again, and a pot running
+// low reads that way well before it actually hits the floor. Deliberately
+// text-only — no colour, no icon (PRD §10: no red, no guilt; running out
+// of food is not a failure state).
+// ─────────────────────────────────────────────────────────────────────────
+
+/** Below this absolute amount (regardless of batch size), a "running low" pot reads as low. */
+const LOW_REMAINING_ABSOLUTE_G = 60;
+/** Below this fraction of the ORIGINAL cooked weight, a pot reads as low even if the absolute amount is still sizeable (a 200g remainder means something different for a 300g pot than a 3000g one). */
+const LOW_REMAINING_FRACTION = 0.12;
+
+export type PotRemainingStatus = {
+  /** The one line to render in place of a bare "Xg left". */
+  label: string;
+  /** Whether this pot is running low — informational only, never styled as a warning (no colour change; PRD §10). */
+  low: boolean;
+};
+
+/** Pure core, given the two raw fields — avoids callers needing a full `PotRow` just to format this. */
+export function potRemainingStatusFromFields(remainingG: number | null, totalWeightG: number | null): PotRemainingStatus {
+  if (remainingG === null) return { label: 'Not yet weighed', low: false };
+  if (remainingG <= 0) return { label: 'About empty', low: true };
+
+  const lowByFraction = totalWeightG !== null && totalWeightG > 0 && remainingG / totalWeightG < LOW_REMAINING_FRACTION;
+  const low = remainingG < LOW_REMAINING_ABSOLUTE_G || lowByFraction;
+  return { label: `${Math.round(remainingG)}g left${low ? ' · running low' : ''}`, low };
+}
+
+/** Convenience wrapper over a stored `PotRow`. */
+export function potRemainingStatus(pot: Pick<PotRow, 'remaining_g' | 'total_weight_g'>): PotRemainingStatus {
+  return potRemainingStatusFromFields(pot.remaining_g, pot.total_weight_g);
 }
 
 /** Parses a stored `PotRow.ingredients` JSON blob. Never throws on malformed/legacy JSON — falls back to an empty list rather than crashing a pot list render. Shared by every `PotRow -> derived summary` helper below so there's exactly one place that degrades a bad blob. */

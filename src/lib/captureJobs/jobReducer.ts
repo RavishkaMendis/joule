@@ -97,5 +97,12 @@ export function describeAiFailure(kind: CaptureJobKind, result: Extract<AiRunRes
       return "Gemini's response couldn't be understood after a retry. Enter this one manually.";
     case 'network':
       return `Couldn't reach Gemini (${result.detail ?? 'network error'}). Check your connection or enter manually.`;
+    // The two proxy-specific failures below are deliberately NOT folded
+    // into the 'network' copy above (task brief: "don't let it collapse
+    // into a generic network error") — each names a different fix.
+    case 'proxy_unauthorized':
+      return "The Gemini proxy rejected this device's token. Check EXPO_PUBLIC_JOULE_PROXY_TOKEN, or enter manually.";
+    case 'proxy_model_not_permitted':
+      return `The Gemini proxy doesn't allow this model yet (${result.detail ?? 'model not permitted'}). Enter manually for now — the proxy's allowlist needs updating.`;
   }
 }

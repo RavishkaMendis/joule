@@ -104,5 +104,20 @@ module.exports = tseslint.config(
     rules: {
       'no-restricted-imports': 'off',
     },
+  },
+  {
+    // The Gemini key proxy (PRD §8) is a Node serverless function deployed
+    // separately to Vercel — it is NOT part of the React Native bundle and
+    // legitimately uses Node globals. Linted rather than ignored, just with
+    // the right environment, so a real mistake in it still surfaces.
+    files: ['proxy/**/*.js'],
+    languageOptions: {
+      globals: {
+        process: 'readonly',
+        Buffer: 'readonly',
+        fetch: 'readonly',
+        console: 'readonly',
+      },
+    },
   }
 );

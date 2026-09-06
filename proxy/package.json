@@ -1,0 +1,10 @@
+{
+  "name": "joule-gemini-proxy",
+  "version": "1.0.0",
+  "private": true,
+  "description": "Holds the Gemini API key server-side so the Joule app bundle never carries it (PRD §8).",
+  "type": "module",
+  "engines": {
+    "node": ">=18"
+  }
+}

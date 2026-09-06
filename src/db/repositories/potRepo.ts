@@ -11,8 +11,37 @@
 //    totals it's given.
 //  - logServing decrements remaining_g and writes a food_entry with
 //    source = 'pot', then triggers intakeRepo.recomputeDay like any other
-//    food_entry mutation. Auto-archives (`is_active = 0`) once
-//    remaining_g reaches (or would go below) zero.
+//    food_entry mutation.
+//
+// REWORK (task brief: "the pots going to zero thing"): `remaining_g` is a
+// COMPUTED ESTIMATE (batch weight minus the sum of weighed servings), not
+// a measurement — scale rounding, a splash of water, food stuck to the
+// pot all make reality drift from it. Three consequences that follow from
+// treating that estimate as ground truth, all fixed here:
+//
+//   1. A pot used to auto-archive (is_active = 0) the instant the
+//      estimate hit zero, and an archived pot wasn't reachable from any
+//      list — so the user could be locked out of logging food they could
+//      see and were about to eat. Fixed by making "finished" an EXPLICIT
+//      user action (`archivePot`/`reopenPot` below), never an inferred
+//      arithmetic threshold. `logServing` now never touches `is_active`;
+//      reaching (or being floored at) zero remaining is a STATE the pot
+//      sits in, not a cliff it falls off. `updatePot` (editing the cooked
+//      weight) likewise now preserves whatever `is_active` already was,
+//      for the same reason — see its own doc.
+//   2. Serving more than the computed remainder is normal at the end of a
+//      batch (the food plainly existed) and used to be silently clamped —
+//      `servedGrams = min(args.grams, remaining_g)` — which under-logged
+//      the real amount eaten with no error and no way to tell. Fixed:
+//      `logServing` now trusts the SCALE READING over its own computed
+//      estimate and logs the full amount weighed. `remaining_g` still
+//      never goes negative (floored at 0) — a physical impossibility
+//      isn't allowed even though the logged food total no longer lies.
+//   3. An archived pot is the only record of how to cook a repeated batch
+//      again. `duplicatePotForCookAgain` in potActions.ts turns "finished"
+//      pots (or any pot) into a fresh, independent one with the same
+//      ingredients and no cooked weight yet — a "cook this again" action
+//      that never mutates the original or any of its logged servings.
 // ═══════════════════════════════════════════════════════════════════════
 
 import type { Database } from '../database';
@@ -178,8 +207,16 @@ export type PotUpdate = {
  * to run against a pot with a null `kcal_per_g`). The new `remaining_g` is
  * `newTotalWeightG - servedSoFar`, clamped to `[0, newTotalWeightG]`.
  * Shrinking the cooked weight below what's already been served clamps to
- * 0 (re-archiving the pot) rather than going negative; raising it past a
- * previously-fully-served pot's total un-archives it.
+ * 0 rather than going negative.
+ *
+ * `is_active` is deliberately left exactly as it was before this edit,
+ * regardless of what the recomputed `remaining_g` comes out to (task
+ * brief: "finished" is an explicit action — `archivePot`/`reopenPot` —
+ * never an inferred arithmetic threshold; this function used to
+ * auto-re-archive a pot purely because a cooked-weight correction brought
+ * the computed remainder to zero, which is exactly the kind of
+ * arithmetic-inferred "finished" this rework eliminates. Reopening a pot
+ * whose weight is corrected back up is now `reopenPot`'s job, explicitly).
  */
 export async function updatePot(db: Database, update: PotUpdate): Promise<PotRow> {
   const existing = await getPot(db, update.id);
@@ -200,7 +237,8 @@ export async function updatePot(db: Database, update: PotUpdate): Promise<PotRow
 
   const newRemaining = newTotalWeightG === null ? null : Math.min(newTotalWeightG, Math.max(0, newTotalWeightG - servedSoFar));
 
-  const isActive = newRemaining === null || newRemaining > 0 ? 1 : 0;
+  // See this function's own doc: never re-derived from `newRemaining`.
+  const isActive = existing.is_active;
 
   await db.runAsync(
     `UPDATE pot
@@ -238,10 +276,32 @@ export async function getAllPots(db: Database): Promise<PotRow[]> {
 }
 
 /**
+ * Finished pots (task brief: "an archived pot is a recipe... finishing a
+ * batch destroys the only record of how to log the next one" — the fix
+ * is making these reachable, not just keeping them in the DB). Same
+ * shape/ordering as `getActivePots`, so FoodsScreen's "Finished" filter is
+ * a straight swap of one query for the other.
+ */
+export async function getArchivedPots(db: Database): Promise<PotRow[]> {
+  return db.getAllAsync<PotRow>('SELECT * FROM pot WHERE is_active = 0 ORDER BY created_at DESC');
+}
+
+/**
  * Log a serving: weigh the bowl, enter grams, done (PRD §7.5's "2 taps").
- * Decrements remaining_g, writes a food_entry with source='pot', and
- * auto-archives the pot when remaining_g hits zero (or would go
- * negative — servings are clamped to what's left).
+ * Decrements remaining_g and writes a food_entry with source='pot'.
+ *
+ * OVERRUN (task brief: "serving more than the computed remainder is
+ * entirely normal at the end of a batch"): `remaining_g` is a computed
+ * estimate, not a measurement, and reality drifts from it (scale
+ * rounding, a splash of water, food stuck to the pot). This used to
+ * clamp `servedGrams` to `remaining_g`, silently under-logging the real
+ * amount eaten with no error and no way to tell — the exact bug the task
+ * brief calls out. Fixed: the SCALE READING wins. `args.grams` — what the
+ * user actually weighed — is logged in full, every time, never refused
+ * and never truncated; `remaining_g` is simply floored at 0 rather than
+ * allowed to go negative (a serving can't out-eat the physical batch, but
+ * it can absolutely reveal the batch was bigger than the estimate said).
+ * This never finishes the pot on its own — see `is_active`'s doc below.
  *
  * `args.grams` is ALWAYS the net (food-only) weight — any tare/container
  * subtraction has already happened by the time this is called (see
@@ -249,6 +309,13 @@ export async function getAllPots(db: Database): Promise<PotRow[]> {
  * arithmetic lives). `args.tareG` is pure bookkeeping recorded alongside
  * the entry (schema v6, food_entry.tare_g — see schema.ts's v6 header for
  * the NULL/0/>0 semantics); it is never applied to `grams` again here.
+ *
+ * `is_active` is NEVER touched by this function, even when the resulting
+ * `remaining_g` floors at 0 (task brief: "a pot near zero stays visible
+ * and usable... show remaining honestly rather than removing it the
+ * instant arithmetic says zero"). A pot only becomes archived via the
+ * explicit `archivePot` below — logging a serving, however large, is
+ * never enough on its own.
  *
  * Confidence is `'high'`, not `'exact'`: a scale reading against a
  * computed kcal_per_g is genuinely trustworthy — materially better than a
@@ -286,15 +353,14 @@ export async function logServing(
     throw new Error(`logServing: pot ${args.potId} has no cooked weight yet — set one before logging a serving`);
   }
 
-  const servedGrams = Math.min(args.grams, pot.remaining_g);
+  // The scale wins: log exactly what was weighed, never truncated to the
+  // computed estimate (see this function's own doc — the overrun fix).
+  const servedGrams = args.grams;
   const newRemaining = Math.max(0, pot.remaining_g - servedGrams);
   const tareG = args.tareG ?? null;
 
-  await db.runAsync('UPDATE pot SET remaining_g = ?, is_active = ? WHERE id = ?', [
-    newRemaining,
-    newRemaining > 0 ? 1 : 0,
-    args.potId,
-  ]);
+  // is_active is deliberately untouched — see this function's own doc.
+  await db.runAsync('UPDATE pot SET remaining_g = ? WHERE id = ?', [newRemaining, args.potId]);
 
   await db.runAsync(
     `INSERT INTO food_entry
@@ -324,8 +390,38 @@ export async function logServing(
   return { entry, pot: updatedPot };
 }
 
-export async function archivePot(db: Database, id: string): Promise<void> {
+/**
+ * Marks a pot finished — task brief: "should 'finished' be an explicit
+ * user action rather than an inferred arithmetic threshold? ... Inferring
+ * from a computed number is what causes all three failures." This is now
+ * the ONLY path `is_active` takes to 0 — never `logServing` reaching zero
+ * remaining, never `updatePot` recomputing a zero remainder (see both
+ * functions' own docs). Idempotent (archiving an already-archived pot is
+ * a no-op, not an error) and never touches `remaining_g`/`ingredients` —
+ * a finished pot keeps whatever numbers it had; `reopenPot` below is the
+ * exact reverse.
+ */
+export async function archivePot(db: Database, id: string): Promise<PotRow> {
   await db.runAsync('UPDATE pot SET is_active = 0 WHERE id = ?', [id]);
+  const row = await getPot(db, id);
+  if (!row) throw new Error(`archivePot: no pot with id ${id}`);
+  return row;
+}
+
+/**
+ * The explicit reverse of `archivePot` — task brief: "Archive must be
+ * reversible and reachable." Un-finishing a pot never touches
+ * `remaining_g`/`ingredients`/cooked weight either; it picks up exactly
+ * where it was left, including a `remaining_g` that's already floored at
+ * 0 (an overrun-emptied or explicitly-finished pot reopened because there
+ * turned out to be more in it is expected to need a fresh serving logged
+ * or its cooked weight corrected, not to be silently reset). Idempotent.
+ */
+export async function reopenPot(db: Database, id: string): Promise<PotRow> {
+  await db.runAsync('UPDATE pot SET is_active = 1 WHERE id = ?', [id]);
+  const row = await getPot(db, id);
+  if (!row) throw new Error(`reopenPot: no pot with id ${id}`);
+  return row;
 }
 
 // ─────────────────────────────────────────────────────────────────────────
