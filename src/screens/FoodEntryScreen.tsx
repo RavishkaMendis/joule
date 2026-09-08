@@ -53,6 +53,7 @@ import { searchLocal, searchRemote, afcdToEntry } from '../lib/foodSources/searc
 import type { AfcdFoodRow } from '../lib/foodSources/afcd';
 import type { PendingEntry } from '../lib/pendingEntry';
 import { parseRequiredNumber } from '../lib/numericInput';
+import { checkAtwaterConsistency, formatAtwaterNote } from '../lib/atwaterCheck';
 
 type Nav = NativeStackNavigationProp<RootStackParamList, 'FoodEntry'>;
 type Route = RouteProp<RootStackParamList, 'FoodEntry'>;
@@ -225,14 +226,51 @@ export function FoodEntryScreen() {
   // coffee has 0g fat) — the fix is requiring the field be non-blank and
   // parseable, not requiring it be positive.
   const num = (field: NumField): { valid: boolean; value: number | null } => parseRequiredNumber(fields[field]);
+
+  /**
+   * AUDIT FIX (arithmetic audit, point 6 — "nothing upstream can hand
+   * computeTDEE a NaN, negative, or absurd intake"): `parseRequiredNumber`
+   * only rejects blank/non-numeric text (by design), so a stray minus
+   * sign in kcal/protein/carbs/fat previously passed `canSave` below and
+   * would have been written straight into `food_entry`, then summed into
+   * `day_intake` — corrupting the engine's actual input for that day. Pot
+   * ingredients already guard against this (potActions.ts's
+   * `ingredientRowIsValid`); this closes the same gap here. 0 stays valid
+   * (a legitimate value — black coffee has 0g fat); only negative is
+   * rejected.
+   */
+  const isNonNegative = (field: NumField): boolean => {
+    const parsed = num(field);
+    return parsed.valid && (parsed.value as number) >= 0;
+  };
+
+  // Atwater cross-check (src/lib/atwaterCheck.ts) — recomputed live from
+  // whatever is currently typed/selected, exactly like ConfirmSheet's
+  // per-row check. This screen is the second (and last) place a
+  // PendingEntry can reach food_entry WITHOUT ever passing through
+  // ConfirmSheet (search/AFCD/OFF results here populate these same
+  // fields directly, and manual entry never used the sheet at all), so
+  // it needs its own copy of the same human-beat check, not a shared
+  // component — this screen owns its own field state and Save button.
+  const kcalField = num('kcal');
+  const proteinField = num('protein_g');
+  const carbsField = num('carbs_g');
+  const fatField = num('fat_g');
+  const atwater = checkAtwaterConsistency({
+    kcal: kcalField.valid ? kcalField.value : null,
+    protein_g: proteinField.valid ? proteinField.value : null,
+    carbs_g: carbsField.valid ? carbsField.value : null,
+    fat_g: fatField.valid ? fatField.value : null,
+  });
+
   const canSave =
     name.trim().length > 0 &&
     num('grams').valid &&
     (num('grams').value as number) > 0 &&
-    num('kcal').valid &&
-    num('protein_g').valid &&
-    num('carbs_g').valid &&
-    num('fat_g').valid;
+    isNonNegative('kcal') &&
+    isNonNegative('protein_g') &&
+    isNonNegative('carbs_g') &&
+    isNonNegative('fat_g');
 
   // Real empty state (PRD §7.2 "never dead-end the user"): only once every
   // tier has definitively finished, never while OFF is still loading.
@@ -398,6 +436,20 @@ export function FoodEntryScreen() {
           <NumericField label="Carbs g" value={fields.carbs_g} onChange={(v) => setField('carbs_g', v)} />
           <NumericField label="Fat g" value={fields.fat_g} onChange={(v) => setField('fat_g', v)} />
         </View>
+
+        {atwater.status === 'mismatch' && (
+          <View style={styles.atwaterNote}>
+            <Text style={styles.atwaterNoteText}>{formatAtwaterNote(atwater)}</Text>
+            <Pressable
+              onPress={() => setField('kcal', String(Math.round(atwater.expectedKcal)))}
+              accessibilityRole="button"
+              accessibilityLabel={`Use the macro-derived ${Math.round(atwater.expectedKcal)} kcal instead of the stated ${Math.round(atwater.statedKcal)} kcal`}
+              style={({ pressed }) => [styles.atwaterButton, pressed && styles.atwaterButtonPressed]}
+            >
+              <Text style={styles.atwaterButtonText}>Use {Math.round(atwater.expectedKcal)} kcal instead</Text>
+            </Pressable>
+          </View>
+        )}
 
         {!isEditing && (
           <View style={styles.saveToggleRow}>
@@ -627,6 +679,32 @@ const styles = StyleSheet.create({
   },
   numericField: {
     flex: 1,
+  },
+  atwaterNote: {
+    backgroundColor: colors.surface,
+    borderRadius: radii.sm,
+    padding: spacing.sm,
+    marginTop: spacing.md,
+    gap: spacing.xs,
+    borderWidth: StyleSheet.hairlineWidth,
+    borderColor: colors.border,
+  },
+  atwaterNoteText: {
+    ...type.small,
+    color: colors.textSecondary,
+  },
+  atwaterButton: {
+    alignSelf: 'flex-start',
+    minHeight: minTouchTarget,
+    justifyContent: 'center',
+  },
+  atwaterButtonPressed: {
+    opacity: 0.6,
+  },
+  atwaterButtonText: {
+    ...type.caption,
+    color: colors.accent,
+    fontWeight: '600',
   },
   saveToggleRow: {
     flexDirection: 'row',

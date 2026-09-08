@@ -61,6 +61,95 @@ describe('resolveKcalPer100g', () => {
     const kcal = resolveKcalPer100g({ 'energy-kj_100g': '1046' as unknown as number });
     expect(kcal).toBeCloseTo(1046 / 4.184, 5);
   });
+
+  // ═════════════════════════════════════════════════════════════════════
+  // THE COCONUT WATER BUG — a real logged entry ("H2coco Lychee Coconut
+  // Water", 1000g, 0P/67C/0F) came back as 64 kcal. 67g of carbohydrate
+  // alone is 268 kcal (Atwater); 64 is arithmetically impossible. Root
+  // cause: this function used to default an absent `energy_unit` to
+  // `'kJ'` when falling back to the generic `energy_100g` field. For this
+  // product OFF's `energy_100g` value (≈26.8) was actually the KCAL
+  // figure, and dividing it by 4.184 silently produced ≈6.4 kcal/100g —
+  // a ~4x-too-LOW error the existing 0-900 plausibility rail cannot catch
+  // (it only rejects values that are too HIGH). The fix: when
+  // `energy_unit` is absent, the generic field is unusable — return null
+  // ("energy unknown") rather than assume a unit in either direction.
+  // ═════════════════════════════════════════════════════════════════════
+  describe('the coconut water bug (generic energy_100g with no declared unit)', () => {
+    it('refuses to guess a unit and returns null when energy_unit is absent', () => {
+      // The exact shape of the real payload: only the generic field, no
+      // energy_unit, no energy-kcal_100g/energy-kj_100g. 26.8 is the
+      // product's real per-100g kcal figure — dividing it by 4.184
+      // (the old default-to-kJ behavior) produced the observed 6.4.
+      const kcal = resolveKcalPer100g({ energy_100g: 26.8 });
+      expect(kcal).toBeNull();
+    });
+
+    it('never silently produces the old ~4x-too-low figure for this case', () => {
+      const kcal = resolveKcalPer100g({ energy_100g: 26.8 });
+      // The bug's signature: 26.8 / 4.184 ≈ 6.4. Assert we are nowhere
+      // near it (kcal is null, but this guards the regression explicitly
+      // even if a future edit changes the null-vs-0 contract).
+      expect(kcal === null || Math.abs(kcal - 26.8 / 4.184) > 1).toBe(true);
+    });
+
+    it('the full 1000g/67C entry must not read 64 kcal', () => {
+      // Reproduces the exact reported bug end-to-end through
+      // mapOffResponse + scaling to the logged 1000g quantity.
+      const result = mapOffResponse('9300000000001', {
+        status: 1,
+        product: {
+          product_name: 'H2coco Lychee Coconut Water',
+          nutriments: {
+            energy_100g: 26.8, // no energy_unit — this is the ambiguous case
+            proteins_100g: 0,
+            carbohydrates_100g: 6.7,
+            fat_100g: 0,
+          },
+        },
+      });
+      expect(result.ok).toBe(true);
+      if (!result.ok) return;
+      // Energy unknown -> per100g.kcal is 0 for display, never the wrong
+      // "64" a bad unit guess would produce, and confidence reflects that
+      // the energy figure is NOT known.
+      expect(result.entry.per100g?.kcal).toBe(0);
+      expect(result.entry.confidence).toBe('low');
+      const scaled = result.entry.kcal * 10; // 100g -> 1000g, same math ConfirmSheet's grams edit uses
+      expect(scaled).not.toBeCloseTo(64, 0);
+    });
+
+    it('honours an explicit energy_unit of kcal on the generic field (not everything defaults away)', () => {
+      // The fix must not become "always null" — a product that DOES
+      // declare its unit should still resolve normally.
+      expect(resolveKcalPer100g({ energy_100g: 26.8, energy_unit: 'kcal' })).toBe(26.8);
+    });
+
+    it('honours an explicit energy_unit of kJ on the generic field', () => {
+      expect(resolveKcalPer100g({ energy_100g: 112.1, energy_unit: 'kJ' })).toBeCloseTo(112.1 / 4.184, 5);
+    });
+
+    it('tries the other unit when the declared one is contradictory (kcal-labelled but kJ-scale)', () => {
+      // A four-figure "kcal" value only makes sense as kJ.
+      const kcal = resolveKcalPer100g({ energy_100g: 1500, energy_unit: 'kcal' });
+      expect(kcal).toBeCloseTo(1500 / 4.184, 5);
+    });
+
+    it('tries the other unit when the declared one is contradictory (kJ-labelled but already kcal-scale)', () => {
+      // If treated as kJ this would be a tiny, implausible-as-food value
+      // relative to typical panels, but it's already plausible as kcal —
+      // exercise the reverse fallback rather than rejecting outright.
+      const kcal = resolveKcalPer100g({ energy_100g: 250, energy_unit: 'kJ' });
+      // 250 kJ -> 59.7 kcal is ALSO plausible, so the declared unit wins
+      // here (this case only diverges from the declared unit when that
+      // reading is implausible) — assert the declared-kJ reading is used.
+      expect(kcal).toBeCloseTo(250 / 4.184, 5);
+    });
+
+    it('returns null for an unrecognised energy_unit string rather than guessing', () => {
+      expect(resolveKcalPer100g({ energy_100g: 100, energy_unit: 'calories' })).toBeNull();
+    });
+  });
 });
 
 describe('mapOffResponse', () => {

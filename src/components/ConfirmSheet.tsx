@@ -32,6 +32,18 @@
 //     `colors.confidence` ladder — never red, never a pass/fail signal.
 //   - `assumptions` surfaced verbatim when present (PRD §8: "Assumed
 //     1 tbsp oil ≈ 14g" builds trust and catches errors).
+//   - Atwater cross-check (src/lib/atwaterCheck.ts) — every row's stated
+//     kcal is cross-checked live against 4·protein+4·carbs+9·fat as the
+//     user edits it. On a mismatch, a neutral, factual note shows BOTH
+//     figures and a "use the macro-derived kcal instead" button — never a
+//     silent correction (this is the human-beat gate PRD §7 requires; the
+//     app surfaces the disagreement, the user decides). This is the exact
+//     class of bug the coconut-water incident was: a barcode's stated
+//     kcal silently wrong by ~4x while its macros were correct the whole
+//     time. Recomputed from the row's CURRENT (post-multiplier, post-edit)
+//     absolute values, not a fixed per-100g basis — that's what makes it
+//     catch an error that only becomes a large absolute discrepancy once
+//     scaled to the quantity actually being logged.
 //   - Per-row "Save to my foods" toggle — writes `saved_food` on confirm
 //     so the personal library grows (PRD §7.3).
 //   - `fallbackAction` rendered prominently so a barcode miss can offer
@@ -125,6 +137,7 @@ import {
 import { getDatabase } from '../lib/db';
 import * as foodRepo from '../db/repositories/foodRepo';
 import { generateId } from '../lib/ids';
+import { checkAtwaterConsistency, formatAtwaterNote } from '../lib/atwaterCheck';
 import { suggestMealName } from '../lib/mealName';
 import { defaultMealTypeForNow, MEAL_TYPES, MEAL_TYPE_LABEL } from '../lib/mealType';
 import type { MealType } from '../db/types';
@@ -262,6 +275,17 @@ export function ConfirmSheet({ entries, date, onConfirm, onCancel, fallbackActio
   // sentinel a cleared field is stored as, see updateNumericField below —
   // always fails). Blank must block confirm rather than silently
   // confirming a fabricated 0, exactly like grams already does.
+  //
+  // AUDIT FIX (arithmetic audit, point 6 — "nothing upstream can hand
+  // computeTDEE a NaN, negative, or absurd intake"): none of these four
+  // fields may be NEGATIVE either. `parseRequiredNumber` only rejects
+  // blank/non-numeric text (by design — see its own doc), so a stray
+  // minus sign typed into kcal/protein/carbs/fat previously passed every
+  // check here and would have been summed straight into that day's
+  // `day_intake` row, silently corrupting the engine's actual input. Pot
+  // ingredients already had this exact guard (potActions.ts's
+  // `ingredientRowIsValid`); this closes the same gap for the food_entry
+  // path everything else in the app ultimately feeds through.
   const canConfirm =
     rows.length > 0 &&
     rows.every(
@@ -270,9 +294,13 @@ export function ConfirmSheet({ entries, date, onConfirm, onCancel, fallbackActio
         Number.isFinite(r.grams) &&
         r.grams > 0 &&
         Number.isFinite(r.kcal) &&
+        r.kcal >= 0 &&
         Number.isFinite(r.protein_g) &&
+        r.protein_g >= 0 &&
         Number.isFinite(r.carbs_g) &&
-        Number.isFinite(r.fat_g)
+        r.carbs_g >= 0 &&
+        Number.isFinite(r.fat_g) &&
+        r.fat_g >= 0
     );
 
   const updateRow = (index: number, patch: Partial<RowDraft>) => {
@@ -552,6 +580,16 @@ function EntryRow({
 }: EntryRowProps) {
   const tint = colors.confidence[row.confidence];
   const activeMultiplier = row.quantityMultiplier ?? 1;
+  // Atwater cross-check (src/lib/atwaterCheck.ts) — recomputed from this
+  // row's CURRENT absolute kcal/macros on every render, so it stays live
+  // through grams edits, multiplier taps, and direct macro edits alike.
+  // Cheap (a handful of arithmetic ops), so no memoization is needed.
+  const atwater = checkAtwaterConsistency({
+    kcal: row.kcal,
+    protein_g: row.protein_g,
+    carbs_g: row.carbs_g,
+    fat_g: row.fat_g,
+  });
   const baselineGrams = row.baseline?.grams;
   const isServingMode = row.displayUnit === 'serving' && !!row.servingBasis;
   // In serving mode the effective-grams readout (task brief: "Always show
@@ -582,6 +620,26 @@ function EntryRow({
         <Text style={styles.assumptions}>
           {'ⓘ'} {row.assumptions}
         </Text>
+      )}
+
+      {/* Atwater cross-check note — neutral and factual (PRD §10: no red,
+          no guilt), never a silent correction. Shows both the stated and
+          macro-derived kcal and lets the user pick; editing kcal or any
+          macro by hand makes this recompute and disappear on its own once
+          the numbers agree. */}
+      {atwater.status === 'mismatch' && (
+        <View style={styles.atwaterNote}>
+          <Text style={styles.atwaterNoteText}>{formatAtwaterNote(atwater)}</Text>
+          <Pressable
+            onPress={() => onChangeField('kcal', String(Math.round(atwater.expectedKcal)))}
+            accessibilityRole="button"
+            accessibilityLabel={`Use the macro-derived ${Math.round(atwater.expectedKcal)} kcal instead of the stated ${Math.round(atwater.statedKcal)} kcal`}
+            hitSlop={4}
+            style={({ pressed }) => [styles.atwaterButton, pressed && styles.atwaterButtonPressed]}
+          >
+            <Text style={styles.atwaterButtonText}>Use {Math.round(atwater.expectedKcal)} kcal instead</Text>
+          </Pressable>
+        </View>
       )}
 
       {/* Serving ⇄ grams unit toggle (task brief complaint #1) — only
@@ -925,6 +983,30 @@ const styles = StyleSheet.create({
     color: colors.textSecondary,
     marginTop: spacing.xs,
     fontStyle: 'italic',
+  },
+  atwaterNote: {
+    backgroundColor: colors.surfaceAlt,
+    borderRadius: radii.sm,
+    padding: spacing.sm,
+    marginTop: spacing.sm,
+    gap: spacing.xs,
+  },
+  atwaterNoteText: {
+    ...type.small,
+    color: colors.textSecondary,
+  },
+  atwaterButton: {
+    alignSelf: 'flex-start',
+    minHeight: minTouchTarget,
+    justifyContent: 'center',
+  },
+  atwaterButtonPressed: {
+    opacity: 0.6,
+  },
+  atwaterButtonText: {
+    ...type.caption,
+    color: colors.accent,
+    fontWeight: '600',
   },
   unitToggleRow: {
     flexDirection: 'row',

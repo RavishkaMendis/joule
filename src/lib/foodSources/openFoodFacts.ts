@@ -83,6 +83,45 @@ function toNumber(v: number | string | null | undefined): number | null {
  * explicit kcal field when present (it's already in the right unit), and
  * falling back to converting kJ. Returns null when no usable/plausible
  * energy figure exists — callers must treat that as "energy unknown", not 0.
+ *
+ * ⚠️ BUG HISTORY — read before touching the generic `energy_100g` branch
+ * below. A real logged entry ("H2coco Lychee Coconut Water", 1000g, 0P/
+ * 67C/0F) came back as 64 kcal, when 67g of carbohydrate alone is 268 kcal
+ * — arithmetically impossible. Root cause: this function used to default
+ * `energy_unit` to `'kJ'` whenever OFF omitted it (`n.energy_unit ??
+ * 'kJ'`), on the theory that kJ is "OFF's internal unit". For THIS
+ * product, whatever number OFF actually returned in `energy_100g` was the
+ * KCAL figure (≈26.8), not kJ — dividing it by 4.184 silently produced
+ * ≈6.4 kcal/100g, i.e. a ~4x-too-LOW error that `isPlausibleKcalPer100g`
+ * (0-900) cannot catch, because it only rejects values that are too HIGH
+ * (the classic "kJ misread as kcal" direction) — a value 4x too low is
+ * still comfortably inside 0-900.
+ *
+ * Investigation: OFF's own documentation and Product Opener source do
+ * describe `energy_100g`/`energy` as "kJ internally", but that "always
+ * kJ" guarantee is NOT actually reliable across every product in a
+ * crowd-sourced, contributor-edited database — this exact product is a
+ * live counterexample. There is no way to independently verify which
+ * convention a given row followed without `energy_unit` telling us. Given
+ * that a wrong guess here silently produces a ~4x error in EITHER
+ * direction (both of which have now been observed or are trivially
+ * possible), the defensible rule is: **do not guess**. When
+ * `energy_unit` is absent, the generic `energy_100g` figure is unusable —
+ * return null ("energy unknown") rather than assume a unit. Every real
+ * OFF product this app has actually hit either populates one of the
+ * unit-specific fields (`energy-kcal_100g` / `energy-kj_100g`, handled
+ * above and always preferred) or gives `energy_unit` alongside the
+ * generic field; the ambiguous case this null covers is the narrow one
+ * where NEITHER exists, and refusing to guess there is strictly safer
+ * than a coin flip that's been observed to land wrong.
+ *
+ * When `energy_unit` IS present, it is honoured — including the
+ * "contradictory" case where the stated unit doesn't match the value's
+ * own scale (e.g. `energy_unit: 'kcal'` on a number that's clearly a kJ
+ * reading, or vice versa): the declared unit is tried first, and if the
+ * plausibility rail rejects it, the OTHER unit is tried before giving up.
+ * This mirrors the existing kcal-vs-kJ fallback above (a garbled kJ value
+ * miswritten under the kcal key) applied to the generic field.
  */
 export function resolveKcalPer100g(n: OffNutriments): number | null {
   const explicitKcal = toNumber(n['energy-kcal_100g']);
@@ -96,18 +135,34 @@ export function resolveKcalPer100g(n: OffNutriments): number | null {
     if (isPlausibleKcalPer100g(fromKj)) return fromKj;
   }
 
-  // Some OFF entries only populate the generic `energy_100g` field, whose
-  // unit is given by `energy_unit` (kJ is OFF's internal default unit).
+  // Some OFF entries only populate the generic `energy_100g` field. Its
+  // unit is whatever `energy_unit` declares — and, per the bug history
+  // above, that unit must be EXPLICIT. An absent `energy_unit` here means
+  // "we genuinely don't know", not "assume kJ".
   const generic = toNumber(n.energy_100g);
-  if (generic !== null) {
-    const unit = (n.energy_unit ?? 'kJ').toLowerCase();
-    const kcal = unit === 'kcal' ? generic : kjToKcal(generic);
-    if (isPlausibleKcalPer100g(kcal)) return kcal;
+  if (generic !== null && n.energy_unit) {
+    const unit = n.energy_unit.toLowerCase();
+    if (unit === 'kcal') {
+      if (isPlausibleKcalPer100g(generic)) return generic;
+      // Contradictory: labelled kcal but the raw number only makes sense
+      // as kJ (e.g. a four-figure "kcal" value) — try the kJ reading
+      // before giving up, same fallback shape as the dedicated fields.
+      const asKj = kjToKcal(generic);
+      if (isPlausibleKcalPer100g(asKj)) return asKj;
+    } else if (unit === 'kj') {
+      const asKj = kjToKcal(generic);
+      if (isPlausibleKcalPer100g(asKj)) return asKj;
+      // Contradictory the other way: labelled kJ but already kcal-scale.
+      if (isPlausibleKcalPer100g(generic)) return generic;
+    }
+    // Any other/unrecognised unit string: fall through to null below
+    // rather than guessing which of kcal/kJ it might mean.
   }
 
   // Explicit kcal field existed but failed the sanity rail (e.g. a kJ
-  // value mistakenly stored under the kcal key) — do not silently accept
-  // an implausible number.
+  // value mistakenly stored under the kcal key), or the generic field had
+  // no (or an unusable) declared unit — do not silently accept an
+  // implausible number or guess a unit.
   return null;
 }
 

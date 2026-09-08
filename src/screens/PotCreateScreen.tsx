@@ -66,6 +66,7 @@ import type { PotIngredient } from '../db/repositories/potRepo';
 import { parseRequiredNumber } from '../lib/numericInput';
 import { pendingEntryFromQuickAdd, QUICK_ADD_PRESETS, type EntryConfidence, type QuickAddPreset } from '../lib/pendingEntry';
 import { IngredientSearchModal, type IngredientSearchResult } from '../components/pot/IngredientSearchModal';
+import { checkAtwaterConsistency, formatAtwaterNote } from '../lib/atwaterCheck';
 
 type Nav = NativeStackNavigationProp<RootStackParamList, 'PotCreate'>;
 type Route = RouteProp<RootStackParamList, 'PotCreate'>;
@@ -99,6 +100,30 @@ export function ingredientRowIsValid(i: Pick<IngredientDraft, 'gramsRaw' | 'kcal
   if (!carbs.valid || (carbs.value as number) < 0) return false;
   if (!fat.valid || (fat.value as number) < 0) return false;
   return true;
+}
+
+/**
+ * Atwater cross-check (src/lib/atwaterCheck.ts) for one ingredient draft
+ * row — same neutral, live "does the stated total kcal agree with
+ * 4·protein+4·carbs+9·fat" check ConfirmSheet runs for a regular food_entry,
+ * applied here so a pot ingredient (barcode/photo/search/manually typed —
+ * this row shape is shared by all four, see IngredientDraft's doc) gets
+ * the identical safety net before it's baked into the whole pot's
+ * kcal_per_g. Runs on the row's TOTAL kcal/macros as currently typed
+ * (whatever its raw grams currently are), not a per-100g basis — the
+ * quantity actually about to be summed into the pot.
+ */
+function ingredientRowAtwater(i: Pick<IngredientDraft, 'kcal' | 'protein_g' | 'carbs_g' | 'fat_g'>) {
+  const kcal = parseRequiredNumber(i.kcal);
+  const protein = parseRequiredNumber(i.protein_g);
+  const carbs = parseRequiredNumber(i.carbs_g);
+  const fat = parseRequiredNumber(i.fat_g);
+  return checkAtwaterConsistency({
+    kcal: kcal.valid ? kcal.value : null,
+    protein_g: protein.valid ? protein.value : null,
+    carbs_g: carbs.valid ? carbs.value : null,
+    fat_g: fat.valid ? fat.value : null,
+  });
 }
 
 /**
@@ -525,6 +550,23 @@ export function PotCreateScreen() {
                   Not yet scalable — fill in every field once; grams edits will then rescale macros automatically.
                 </Text>
               )}
+              {(() => {
+                const atwater = ingredientRowAtwater(ing);
+                if (atwater.status !== 'mismatch') return null;
+                return (
+                  <View style={styles.atwaterNote}>
+                    <Text style={styles.atwaterNoteText}>{formatAtwaterNote(atwater)}</Text>
+                    <Pressable
+                      onPress={() => handleMacroChange(i, 'kcal', String(Math.round(atwater.expectedKcal)))}
+                      accessibilityRole="button"
+                      accessibilityLabel={`Use the macro-derived ${Math.round(atwater.expectedKcal)} kcal instead of the stated ${Math.round(atwater.statedKcal)} kcal for ${ing.name || 'this ingredient'}`}
+                      style={({ pressed }) => [styles.atwaterButton, pressed && styles.atwaterButtonPressed]}
+                    >
+                      <Text style={styles.atwaterButtonText}>Use {Math.round(atwater.expectedKcal)} kcal instead</Text>
+                    </Pressable>
+                  </View>
+                );
+              })()}
               <View style={styles.rowFooter}>
                 {/* Per-ingredient barcode upgrade (task brief headline
                     feature): scanning replaces this row's macros with an
@@ -676,6 +718,30 @@ const styles = StyleSheet.create({
     ...type.small,
     color: colors.textTertiary,
     marginTop: 2,
+  },
+  atwaterNote: {
+    backgroundColor: colors.surfaceAlt,
+    borderRadius: radii.sm,
+    padding: spacing.sm,
+    marginTop: spacing.sm,
+    gap: spacing.xs,
+  },
+  atwaterNoteText: {
+    ...type.small,
+    color: colors.textSecondary,
+  },
+  atwaterButton: {
+    alignSelf: 'flex-start',
+    minHeight: minTouchTarget,
+    justifyContent: 'center',
+  },
+  atwaterButtonPressed: {
+    opacity: 0.6,
+  },
+  atwaterButtonText: {
+    ...type.caption,
+    color: colors.accent,
+    fontWeight: '600',
   },
   textInput: {
     ...type.body,
