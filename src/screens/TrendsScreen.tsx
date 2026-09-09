@@ -37,7 +37,7 @@ import { useCallback, useState } from 'react';
 import { RefreshControl, ScrollView, StyleSheet, Text, View } from 'react-native';
 import { useFocusEffect } from '@react-navigation/native';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
-import { colors, spacing, type } from '../lib/theme';
+import { colors, radii, spacing, type } from '../lib/theme';
 import { useTrendsData } from '../lib/useTrendsData';
 import { TDEEChart } from '../components/charts/TDEEChart';
 import { WeightChart } from '../components/charts/WeightChart';
@@ -143,14 +143,23 @@ const styles = StyleSheet.create({
     paddingHorizontal: spacing.lg,
     marginBottom: spacing.md,
   },
+  // Matches the card treatment TodayScreen's own zero-data state
+  // (firstRunBanner) uses — a bordered surface, not bare text floating in
+  // empty space, so a fresh install reads as "deliberately waiting for
+  // data" rather than "broken".
   emptyState: {
-    paddingHorizontal: spacing.lg,
-    paddingTop: spacing.xl,
+    marginHorizontal: spacing.lg,
+    marginTop: spacing.md,
+    backgroundColor: colors.surface,
+    borderRadius: radii.md,
+    padding: spacing.lg,
+    borderWidth: StyleSheet.hairlineWidth,
+    borderColor: colors.border,
   },
   emptyTitle: {
-    ...type.bodyStrong,
+    ...type.h2,
     color: colors.text,
-    marginBottom: spacing.xs,
+    marginBottom: spacing.sm,
   },
   emptyBody: {
     ...type.body,

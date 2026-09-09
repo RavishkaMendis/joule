@@ -16,7 +16,8 @@
 
 import { View, Text, StyleSheet } from 'react-native';
 import Svg, { Rect, Line } from 'react-native-svg';
-import { colors, numeric, spacing, type } from '../../lib/theme';
+import { colors, spacing, type } from '../../lib/theme';
+import { chartCard } from './chartCard';
 import { linearScale, numericExtent } from '../../lib/chartScale';
 import type { AdherenceDay } from '../../lib/adherenceSeries';
 import { adherenceLabel } from '../../lib/checkInLogic';
@@ -34,9 +35,9 @@ export function AdherenceChart({ series, height = 140 }: Props) {
 
   if (series.length === 0) {
     return (
-      <View style={styles.container}>
-        <Text style={styles.title}>Intake adherence</Text>
-        <Text style={styles.empty}>Nothing logged in this window yet.</Text>
+      <View style={chartCard.container}>
+        <Text style={chartCard.title}>Intake adherence</Text>
+        <Text style={chartCard.empty}>Nothing logged in this window yet.</Text>
       </View>
     );
   }
@@ -57,10 +58,10 @@ export function AdherenceChart({ series, height = 140 }: Props) {
   const yScale = linearScale([0, yMax], [CHART_PADDING.top + plotHeight, CHART_PADDING.top]);
 
   return (
-    <View style={styles.container}>
-      <View style={styles.headerRow}>
-        <Text style={styles.title}>Intake adherence</Text>
-        <Text style={styles.subtitle}>{adherenceLabel(loggedCount, series.length)}</Text>
+    <View style={chartCard.container}>
+      <View style={chartCard.headerRow}>
+        <Text style={chartCard.title}>Intake adherence</Text>
+        <Text style={chartCard.subtitle}>{adherenceLabel(loggedCount, series.length)}</Text>
       </View>
       <Svg width={width} height={height}>
         {targetKcal !== null && (
@@ -104,34 +105,6 @@ export function AdherenceChart({ series, height = 140 }: Props) {
 }
 
 const styles = StyleSheet.create({
-  container: {
-    backgroundColor: colors.surface,
-    borderRadius: 12,
-    padding: spacing.md,
-    marginHorizontal: spacing.lg,
-    marginBottom: spacing.md,
-    borderWidth: StyleSheet.hairlineWidth,
-    borderColor: colors.border,
-  },
-  headerRow: {
-    flexDirection: 'row',
-    justifyContent: 'space-between',
-    alignItems: 'baseline',
-    marginBottom: spacing.sm,
-  },
-  title: {
-    ...type.bodyStrong,
-    color: colors.text,
-  },
-  subtitle: {
-    ...type.caption,
-    ...numeric,
-    color: colors.textSecondary,
-  },
-  empty: {
-    ...type.caption,
-    color: colors.textTertiary,
-  },
   hint: {
     ...type.small,
     color: colors.textTertiary,

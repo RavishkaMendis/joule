@@ -87,7 +87,7 @@ const styles = StyleSheet.create({
   title: {
     ...type.bodyStrong,
     color: colors.text,
-    marginBottom: spacing.xs / 2,
+    marginBottom: spacing.xs,
   },
   subtitle: {
     ...type.caption,

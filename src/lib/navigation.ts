@@ -151,6 +151,8 @@ export type RootStackParamList = {
   SupplementForm: { id?: string } | undefined;
   /** Zepp export import — reference-only data into `external_estimate`, never read by the engine (task brief "Feature 2 — Zepp import"). Entry point lives on SettingsScreen. */
   ZeppImport: undefined;
+  /** Scans logged food_entry rows for arithmetic/unit-conversion damage (e.g. the OFF kJ/4.184 bug) and lets the user apply macro-derived fixes, per-entry or in bulk — never automatically. Entry point lives on SettingsScreen. */
+  DataHealth: undefined;
   // ─── Capture routes (PRD §7) ───
   // All five input paths converge on the one shared ConfirmSheet (see
   // src/lib/pendingEntry.ts), so none of these carry entry params — each

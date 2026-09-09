@@ -64,6 +64,7 @@ import { getAcceptedTargets, saveAcceptedTargets, type StoredTargets } from '../
 import { getLastCheckIn, recordCheckIn, type CheckInHistoryEntry } from '../lib/checkInHistory';
 import { explainTargetChange, adherenceLabel, weekLabelFromDaysOfData } from '../lib/checkInLogic';
 import { parseRequiredNumber } from '../lib/numericInput';
+import { filterIntakeForEngine } from '../lib/engineInput';
 
 type Nav = NativeStackNavigationProp<RootStackParamList, 'WeeklyCheckIn'>;
 
@@ -162,7 +163,11 @@ export function WeeklyCheckInScreen() {
 
     const intake = intakeRows.map(toDayIntake);
     const weights = weightRows.map(toWeightLog);
-    const tdee = computeTDEE(intake, weights, profile);
+    // See src/lib/engineInput.ts: today's still-in-progress rollup and
+    // any phantom empty rollup must not reach computeTDEE, here either —
+    // a check-in run mid-day is exactly as exposed to the "today reads as
+    // a complete 400 kcal day" defect as the Today screen is.
+    const tdee = computeTDEE(filterIntakeForEngine(intake, today), weights, profile);
     const newTargets = computeTargets(tdee, profile);
     const loggedDaysInLast7 = weekIntakeRows.filter((r) => (r.kcal ?? 0) > 0 || r.is_complete === 0).length;
 

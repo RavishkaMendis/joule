@@ -59,7 +59,7 @@ const styles = StyleSheet.create({
     overflow: 'hidden',
   },
   confidenceLabel: {
-    fontSize: 9,
+    ...type.small,
     marginTop: 2,
   },
 });

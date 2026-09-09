@@ -143,11 +143,11 @@ function DatePickerModal({
       <Pressable style={styles.modalBackdrop} onPress={onClose} accessibilityRole="button" accessibilityLabel="Close date picker">
         <Pressable style={styles.calendarCard} onPress={(e) => e.stopPropagation()}>
           <View style={styles.calendarHeader}>
-            <Pressable onPress={goPrevMonth} accessibilityRole="button" accessibilityLabel="Previous month" hitSlop={8}>
+            <Pressable onPress={goPrevMonth} accessibilityRole="button" accessibilityLabel="Previous month" style={styles.calendarNavButton}>
               <Text style={styles.calendarNavText}>‹</Text>
             </Pressable>
             <Text style={styles.calendarMonthLabel}>{monthLabel}</Text>
-            <Pressable onPress={goNextMonth} accessibilityRole="button" accessibilityLabel="Next month" hitSlop={8}>
+            <Pressable onPress={goNextMonth} accessibilityRole="button" accessibilityLabel="Next month" style={styles.calendarNavButton}>
               <Text style={styles.calendarNavText}>›</Text>
             </Pressable>
           </View>
@@ -250,7 +250,10 @@ const styles = StyleSheet.create({
     backgroundColor: colors.surface,
     borderRadius: radii.lg,
     padding: spacing.lg,
-    width: 320,
+    // Wide enough that each of the 7 day columns below (this width minus
+    // the padding on both sides, divided by 7) clears minTouchTarget —
+    // at the previous 320 they landed at ~39dp, under the 44dp minimum.
+    width: 360,
   },
   calendarHeader: {
     flexDirection: 'row',
@@ -258,10 +261,15 @@ const styles = StyleSheet.create({
     justifyContent: 'space-between',
     marginBottom: spacing.md,
   },
+  calendarNavButton: {
+    minWidth: minTouchTarget,
+    minHeight: minTouchTarget,
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
   calendarNavText: {
     ...type.h2,
     color: colors.textSecondary,
-    paddingHorizontal: spacing.sm,
   },
   calendarMonthLabel: {
     ...type.bodyStrong,

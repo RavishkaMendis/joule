@@ -56,6 +56,7 @@ import { WeeklyCheckInScreen } from './src/screens/WeeklyCheckInScreen';
 import { OnboardingScreen } from './src/screens/OnboardingScreen';
 import { RestoreOfferScreen } from './src/screens/RestoreOfferScreen';
 import { SettingsScreen } from './src/screens/SettingsScreen';
+import { DataHealthScreen } from './src/screens/DataHealthScreen';
 import { PotCreateScreen } from './src/screens/PotCreateScreen';
 import { PotLogServingScreen } from './src/screens/PotLogServingScreen';
 import { PotIngredientsPhotoScreen } from './src/screens/PotIngredientsPhotoScreen';
@@ -250,6 +251,7 @@ export default function App() {
             <Stack.Screen name="Onboarding" component={OnboardingScreen} options={{ headerShown: false, gestureEnabled: false }} />
             <Stack.Screen name="RestoreOffer" component={RestoreOfferScreen} options={{ headerShown: false, gestureEnabled: false }} />
             <Stack.Screen name="Settings" component={SettingsScreen} options={{ title: 'Settings' }} />
+            <Stack.Screen name="DataHealth" component={DataHealthScreen} options={{ title: 'Data health' }} />
             <Stack.Screen
               name="PotCreate"
               component={PotCreateScreen}

@@ -56,6 +56,7 @@ import { buildDayOfWeekPattern, type DayOfWeekPoint } from './analytics/dayOfWee
 import { summarizeProteinConsistency, type ProteinConsistencySummary } from './analytics/proteinConsistency';
 import { summarizeSourceBreakdown, type SourceBreakdownSummary } from './analytics/sourceBreakdown';
 import { computeStrapBias, type StrapBiasResult } from './analytics/strapBias';
+import { filterIntakeForEngine } from './engineInput';
 
 const TRENDS_WINDOW_DAYS = 60;
 
@@ -220,6 +221,12 @@ export function useTrendsData(db?: Database): TrendsData {
       const profile = profileRow ? toUserProfile(profileRow) : DEFAULT_PROFILE;
       const intake = intakeRows.map(toDayIntake);
       const weights = weightRows.map(toWeightLog);
+      // See src/lib/engineInput.ts. Only the copy fed to computeTDEE is
+      // filtered — `intake`/`intakeRows` themselves stay raw for
+      // adherence/energy-balance/weekly-rollup below, which legitimately
+      // want to show today's in-progress log and a genuine zero day as
+      // real data, not hide them.
+      const engineIntake = filterIntakeForEngine(intake, today);
 
       // ─── Weight chart: raw dots + Kalman-smoothed line ───
       const rawByDate = new Map(weights.map((w) => [w.date, w.weight_kg]));
@@ -245,7 +252,13 @@ export function useTrendsData(db?: Database): TrendsData {
 
         tdeePoints = offsets.map((offset) => {
           const cutoff = addDaysISO(firstDate, offset);
-          const intakeUpToCutoff = intake.filter((d) => d.date <= cutoff);
+          // Filtering by `today` (not `cutoff`) before slicing is
+          // deliberate: it only ever drops the row dated exactly `today`
+          // (rule 1), which only shows up in this slice when `cutoff`
+          // itself equals `today` — a historical cutoff's "current day"
+          // was a genuinely completed observation and must not be
+          // dropped. Rule 2 (empty rollup) is cutoff-independent.
+          const intakeUpToCutoff = engineIntake.filter((d) => d.date <= cutoff);
           const weightsUpToCutoff = weights.filter((w) => w.date <= cutoff);
           const result = computeTDEE(intakeUpToCutoff, weightsUpToCutoff, profile);
           return {
@@ -259,7 +272,7 @@ export function useTrendsData(db?: Database): TrendsData {
       }
       setTdeeSeries(tdeePoints);
 
-      const overall = computeTDEE(intake, weights, profile);
+      const overall = computeTDEE(engineIntake, weights, profile);
       setLatestTdee(overall);
       setTargets(storedTargets);
 

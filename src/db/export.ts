@@ -13,6 +13,7 @@
 
 import type { Database } from './database';
 import { toCsv, parseCsv } from '../lib/csv';
+import * as intakeRepo from './repositories/intakeRepo';
 import type {
   DayIntakeRow,
   WeightLogRow,
@@ -311,12 +312,47 @@ export async function importWeightLogCsv(db: Database, csvText: string): Promise
 }
 
 /**
- * Generic CSV import for `day_intake` (PRD §12). NOTE: since day_intake is
- * normally a derived rollup of food_entry (see src/db/repositories/intakeRepo.ts),
- * importing directly here is intended for restoring a JSON/CSV backup on a
- * fresh install (where food_entry history may not be re-imported), not for
- * routine use alongside live logging — a later recomputeDay call for an
- * imported date will overwrite it from food_entry. Upserts by date.
+ * Generic CSV import for `day_intake` (PRD §12).
+ *
+ * ⚠️ AUDIT FIX: day_intake is a DERIVED ROLLUP of food_entry — see
+ * src/db/repositories/intakeRepo.ts's own header: "no other code should
+ * hand-write day_intake's numeric columns." This function used to do
+ * exactly that (a raw `INSERT INTO day_intake`), which is a silent time
+ * bomb: the imported total looked right only until the NEXT
+ * `intakeRepo.recomputeDay` for that date — triggered by adding or editing
+ * ANY food_entry for it, even a completely unrelated one, weeks later. At
+ * that point recomputeDay re-derives the row from food_entry alone, finds
+ * none (or only the new entry), and silently overwrites the imported
+ * historical total down to near-zero — no error, no warning, and this
+ * value feeds straight into computeTDEE's intake window (day_intake is one
+ * of only two tables the engine reads). A restored backup's history could
+ * evaporate the first time the user touched a logged item on that date.
+ *
+ * Fixed by importing each day as ONE synthetic food_entry row instead
+ * (`source: 'manual'`, `confidence: 'medium'` — a whole day's total is a
+ * real number but no longer attributable to a specific item, so it must
+ * not read as more certain than it is; a deterministic id keyed on the
+ * date so re-importing the same backup upserts that same row rather than
+ * duplicating it), then calling the exact same `intakeRepo.recomputeDay`
+ * every other food_entry mutation goes through. A later food_entry edit
+ * for that date now recomputes CORRECTLY — the imported total is IN the
+ * sum being re-derived, not a value the sum silently replaces. The
+ * synthetic row is a completely normal food_entry afterwards: editable and
+ * deletable forever like anything else (PRD §10).
+ *
+ * `is_complete` has no food_entry-derivable equivalent — it's applied as
+ * an explicit column update AFTER recomputeDay runs (recomputeDay's own
+ * documented behavior is to preserve whatever is already stored, which
+ * would otherwise ignore this CSV's value).
+ *
+ * Documented tradeoff, matching this function's original intended use
+ * ("restoring a JSON/CSV backup on a fresh install where food_entry
+ * history may not be re-imported"): if food_entry rows already exist for
+ * an imported date — e.g. re-running this import onto a device with live
+ * data rather than a fresh install — the synthetic entry ADDS to them
+ * rather than replacing the day's total. This assumes a fresh/empty day,
+ * exactly like the JSON restore flow it exists alongside; it is not a
+ * general-purpose "overwrite today's log" tool.
  */
 export async function importDayIntakeCsv(db: Database, csvText: string): Promise<ImportResult> {
   const rows = parseCsv(csvText);
@@ -334,17 +370,29 @@ export async function importDayIntakeCsv(db: Database, csvText: string): Promise
     const fat_g = parseNumber(row.fat_g ?? '', 'fat_g', errors) ?? 0;
     const is_complete = row.is_complete === '' || row.is_complete === undefined ? 1 : Number(row.is_complete) ? 1 : 0;
 
+    // Deterministic per-date id — re-importing the same backup updates
+    // this exact synthetic row (see ON CONFLICT below) instead of piling
+    // up duplicate food_entry rows and double-counting the day.
+    const entryId = `csv_import_day_${row.date}`;
+
     await db.runAsync(
-      `INSERT INTO day_intake (date, kcal, protein_g, carbs_g, fat_g, is_complete)
-       VALUES (?, ?, ?, ?, ?, ?)
-       ON CONFLICT(date) DO UPDATE SET
+      `INSERT INTO food_entry
+         (id, date, logged_at, name, grams, kcal, protein_g, carbs_g, fat_g, source, confidence, pot_id, raw_input)
+       VALUES (?, ?, ?, ?, 0, ?, ?, ?, ?, 'manual', 'medium', NULL, ?)
+       ON CONFLICT(id) DO UPDATE SET
+         logged_at = excluded.logged_at,
          kcal = excluded.kcal,
          protein_g = excluded.protein_g,
          carbs_g = excluded.carbs_g,
-         fat_g = excluded.fat_g,
-         is_complete = excluded.is_complete`,
-      [row.date, kcal, protein_g, carbs_g, fat_g, is_complete]
+         fat_g = excluded.fat_g`,
+      [entryId, row.date, Date.now(), 'Imported day total (CSV)', kcal, protein_g, carbs_g, fat_g, 'Imported via day_intake CSV backup']
     );
+
+    // The one true derivation path (intakeRepo.ts) — never a second
+    // formula for how day_intake's numeric columns come to be.
+    await intakeRepo.recomputeDay(db, row.date);
+    await db.runAsync('UPDATE day_intake SET is_complete = ? WHERE date = ?', [is_complete, row.date]);
+
     rowsImported += 1;
   }
 

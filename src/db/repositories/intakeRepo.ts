@@ -18,6 +18,7 @@
 // ═══════════════════════════════════════════════════════════════════════
 
 import type { Database } from '../database';
+import type { SQLBindValue } from '../database';
 import type { DayIntakeRow } from '../types';
 
 type SumRow = {
@@ -103,4 +104,88 @@ export async function setComplete(db: Database, date: string, isComplete: boolea
     await recomputeDay(db, date);
   }
   await db.runAsync('UPDATE day_intake SET is_complete = ? WHERE date = ?', [isComplete ? 1 : 0, date]);
+}
+
+/** How many dates' worth of params get bundled into a single bulk upsert statement (see recomputeAllDays). 100 dates * 6 params/date = 600 bind params, safely under SQLite's default 999-parameter compile-time limit (SQLITE_MAX_VARIABLE_NUMBER) with headroom for older builds. */
+const RECOMPUTE_ALL_BATCH_SIZE = 100;
+
+export type RecomputeAllResult = {
+  /** Number of distinct dates rebuilt (every date that had a day_intake row and/or food_entry rows). */
+  daysTouched: number;
+};
+
+/**
+ * Rebuilds EVERY day_intake rollup from food_entry in one pass — the
+ * repair path for historical drift between the two (a bulk import/edit
+ * that bypassed foodRepo, a restored backup, or just wanting to confirm
+ * the rollups are trustworthy after the data-health scan fixes some
+ * entries by hand). `is_complete` is preserved per-date exactly as
+ * `recomputeDay` preserves it for a single date; a date that has
+ * food_entry rows but no existing day_intake row yet defaults to
+ * complete (1), matching `recomputeDay`'s own first-touch default.
+ *
+ * Deliberately NOT implemented as `recomputeDay` called once per date:
+ * that would be 2 SELECTs + 1 upsert round-trip PER DATE (a year of
+ * daily data is 365 dates -> ~1095 round-trips). Instead this does
+ * exactly 2 SELECTs total (one aggregate GROUP BY over all of
+ * food_entry, one full read of day_intake), unions the dates in memory,
+ * then upserts in a handful of multi-row batched statements wrapped in a
+ * single transaction — O(1) SELECT round-trips and O(days / batch size)
+ * write round-trips, not O(days) of both.
+ */
+export async function recomputeAllDays(db: Database): Promise<RecomputeAllResult> {
+  const [sumRows, existingRows] = await Promise.all([
+    db.getAllAsync<{ date: string } & SumRow>(
+      `SELECT date, SUM(kcal) as kcal, SUM(protein_g) as protein_g, SUM(carbs_g) as carbs_g, SUM(fat_g) as fat_g
+       FROM food_entry
+       GROUP BY date`
+    ),
+    db.getAllAsync<{ date: string; is_complete: number }>('SELECT date, is_complete FROM day_intake'),
+  ]);
+
+  const sumsByDate = new Map(sumRows.map((r) => [r.date, r]));
+  const completeByDate = new Map(existingRows.map((r) => [r.date, r.is_complete]));
+
+  const allDates = [...new Set<string>([...sumsByDate.keys(), ...completeByDate.keys()])];
+  if (allDates.length === 0) {
+    return { daysTouched: 0 };
+  }
+
+  await db.execAsync('BEGIN');
+  try {
+    for (let i = 0; i < allDates.length; i += RECOMPUTE_ALL_BATCH_SIZE) {
+      const batch = allDates.slice(i, i + RECOMPUTE_ALL_BATCH_SIZE);
+      const valuesSql = batch.map(() => '(?, ?, ?, ?, ?, ?)').join(', ');
+      const params: SQLBindValue[] = [];
+      for (const date of batch) {
+        const sums = sumsByDate.get(date);
+        params.push(
+          date,
+          sums?.kcal ?? 0,
+          sums?.protein_g ?? 0,
+          sums?.carbs_g ?? 0,
+          sums?.fat_g ?? 0,
+          completeByDate.get(date) ?? 1
+        );
+      }
+
+      await db.runAsync(
+        `INSERT INTO day_intake (date, kcal, protein_g, carbs_g, fat_g, is_complete)
+         VALUES ${valuesSql}
+         ON CONFLICT(date) DO UPDATE SET
+           kcal = excluded.kcal,
+           protein_g = excluded.protein_g,
+           carbs_g = excluded.carbs_g,
+           fat_g = excluded.fat_g,
+           is_complete = excluded.is_complete`,
+        params
+      );
+    }
+    await db.execAsync('COMMIT');
+  } catch (e) {
+    await db.execAsync('ROLLBACK');
+    throw e;
+  }
+
+  return { daysTouched: allDates.length };
 }

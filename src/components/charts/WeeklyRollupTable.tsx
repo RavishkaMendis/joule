@@ -22,6 +22,7 @@
 
 import { View, Text, StyleSheet } from 'react-native';
 import { colors, numeric, spacing, type } from '../../lib/theme';
+import { chartCard } from './chartCard';
 import type { WeeklyRollupRow } from '../../lib/analytics/weeklyRollup';
 import type { DataQuality } from '../../engine/types';
 
@@ -73,16 +74,16 @@ export function WeeklyRollupTable({ rows }: Props) {
 
   if (displayRows.length === 0) {
     return (
-      <View style={styles.container}>
-        <Text style={styles.title}>Weekly summary</Text>
-        <Text style={styles.empty}>Log for a week to see your first weekly summary here.</Text>
+      <View style={chartCard.container}>
+        <Text style={[chartCard.title, styles.title]}>Weekly summary</Text>
+        <Text style={chartCard.empty}>Log for a week to see your first weekly summary here.</Text>
       </View>
     );
   }
 
   return (
-    <View style={styles.container}>
-      <Text style={styles.title}>Weekly summary</Text>
+    <View style={chartCard.container}>
+      <Text style={[chartCard.title, styles.title]}>Weekly summary</Text>
       <View style={styles.headerRow}>
         <Text style={[styles.headerCell, styles.weekCol]}>Week</Text>
         <Text style={[styles.headerCell, styles.numCol]}>Intake</Text>
@@ -114,23 +115,11 @@ export function WeeklyRollupTable({ rows }: Props) {
 }
 
 const styles = StyleSheet.create({
-  container: {
-    backgroundColor: colors.surface,
-    borderRadius: 12,
-    padding: spacing.md,
-    marginHorizontal: spacing.lg,
-    marginBottom: spacing.md,
-    borderWidth: StyleSheet.hairlineWidth,
-    borderColor: colors.border,
-  },
+  // chartCard.title has no bottom margin (in every other chart it sits
+  // inline inside a headerRow) — this title stands alone on its own line
+  // above the table, so it needs one added back.
   title: {
-    ...type.bodyStrong,
-    color: colors.text,
     marginBottom: spacing.sm,
-  },
-  empty: {
-    ...type.caption,
-    color: colors.textTertiary,
   },
   footnote: {
     ...type.small,

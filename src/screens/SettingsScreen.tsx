@@ -410,6 +410,13 @@ export function SettingsScreen() {
             disabled={busy !== null}
           />
         </Section>
+
+        <Section
+          title="Data health"
+          subtitle="Scans your logged entries for arithmetic that doesn't add up — including a since-fixed unit-conversion bug that could have left some energy figures too low. Nothing is changed without your say-so."
+        >
+          <ActionButton label="Review data health" onPress={() => navigation.navigate('DataHealth')} />
+        </Section>
       </ScrollView>
     </View>
   );

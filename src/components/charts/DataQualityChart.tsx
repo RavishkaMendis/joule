@@ -11,6 +11,7 @@
 
 import { View, Text, StyleSheet } from 'react-native';
 import { colors, numeric, spacing, type } from '../../lib/theme';
+import { chartCard } from './chartCard';
 import type { SourceBreakdownSummary } from '../../lib/analytics/sourceBreakdown';
 
 type Props = {
@@ -27,9 +28,9 @@ const CONFIDENCE_LABELS: Record<string, string> = {
 export function DataQualityChart({ summary }: Props) {
   if (summary.totalEntries === 0) {
     return (
-      <View style={styles.container}>
-        <Text style={styles.title}>Data quality</Text>
-        <Text style={styles.empty}>
+      <View style={chartCard.container}>
+        <Text style={chartCard.title}>Data quality</Text>
+        <Text style={[chartCard.empty, styles.empty]}>
           Once you&apos;ve logged some food, this shows how much of it was exact (barcode/label) vs. estimated
           (photo/voice) — so you know how much to trust the numbers above.
         </Text>
@@ -40,11 +41,11 @@ export function DataQualityChart({ summary }: Props) {
   const nonZero = summary.byConfidence.filter((c) => c.kcal > 0);
 
   return (
-    <View style={styles.container}>
-      <View style={styles.headerRow}>
-        <Text style={styles.title}>Data quality</Text>
+    <View style={chartCard.container}>
+      <View style={chartCard.headerRow}>
+        <Text style={chartCard.title}>Data quality</Text>
         {summary.trustedFraction !== null && (
-          <Text style={styles.subtitle}>{Math.round(summary.trustedFraction * 100)}% exact/high confidence</Text>
+          <Text style={chartCard.subtitle}>{Math.round(summary.trustedFraction * 100)}% exact/high confidence</Text>
         )}
       </View>
 
@@ -76,33 +77,9 @@ export function DataQualityChart({ summary }: Props) {
 }
 
 const styles = StyleSheet.create({
-  container: {
-    backgroundColor: colors.surface,
-    borderRadius: 12,
-    padding: spacing.md,
-    marginHorizontal: spacing.lg,
-    marginBottom: spacing.md,
-    borderWidth: StyleSheet.hairlineWidth,
-    borderColor: colors.border,
-  },
-  headerRow: {
-    flexDirection: 'row',
-    justifyContent: 'space-between',
-    alignItems: 'baseline',
-    marginBottom: spacing.sm,
-  },
-  title: {
-    ...type.bodyStrong,
-    color: colors.text,
-  },
-  subtitle: {
-    ...type.caption,
-    ...numeric,
-    color: colors.textSecondary,
-  },
+  // chartCard.empty has no lineHeight (a one-line empty state everywhere
+  // else) — this one wraps to multiple lines, so it needs one added back.
   empty: {
-    ...type.caption,
-    color: colors.textTertiary,
     lineHeight: 19,
   },
   stackBar: {

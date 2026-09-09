@@ -13,6 +13,7 @@
 import { View, Text, StyleSheet } from 'react-native';
 import Svg, { Rect } from 'react-native-svg';
 import { colors, numeric, spacing, type } from '../../lib/theme';
+import { chartCard } from './chartCard';
 import { linearScale } from '../../lib/chartScale';
 import type { ProteinConsistencySummary } from '../../lib/analytics/proteinConsistency';
 
@@ -28,9 +29,9 @@ const MIN_LOGGED_DAYS_FOR_HISTOGRAM = 3;
 export function ProteinConsistencyChart({ summary, height = 130 }: Props) {
   if (summary.loggedDays === 0) {
     return (
-      <View style={styles.container}>
-        <Text style={styles.title}>Protein consistency</Text>
-        <Text style={styles.empty}>Log a few days of food to see how consistently you hit your protein target.</Text>
+      <View style={chartCard.container}>
+        <Text style={chartCard.title}>Protein consistency</Text>
+        <Text style={chartCard.empty}>Log a few days of food to see how consistently you hit your protein target.</Text>
       </View>
     );
   }
@@ -40,10 +41,10 @@ export function ProteinConsistencyChart({ summary, height = 130 }: Props) {
   const showHistogram = summary.histogram.length > 0 && summary.loggedDays >= MIN_LOGGED_DAYS_FOR_HISTOGRAM;
 
   return (
-    <View style={styles.container}>
-      <View style={styles.headerRow}>
-        <Text style={styles.title}>Protein consistency</Text>
-        <Text style={styles.subtitle}>{avgLabel}</Text>
+    <View style={chartCard.container}>
+      <View style={chartCard.headerRow}>
+        <Text style={chartCard.title}>Protein consistency</Text>
+        <Text style={chartCard.subtitle}>{avgLabel}</Text>
       </View>
 
       {summary.hitRateFraction !== null ? (
@@ -98,34 +99,6 @@ function Histogram({ buckets, height }: { buckets: ProteinConsistencySummary['hi
 }
 
 const styles = StyleSheet.create({
-  container: {
-    backgroundColor: colors.surface,
-    borderRadius: 12,
-    padding: spacing.md,
-    marginHorizontal: spacing.lg,
-    marginBottom: spacing.md,
-    borderWidth: StyleSheet.hairlineWidth,
-    borderColor: colors.border,
-  },
-  headerRow: {
-    flexDirection: 'row',
-    justifyContent: 'space-between',
-    alignItems: 'baseline',
-    marginBottom: spacing.xs,
-  },
-  title: {
-    ...type.bodyStrong,
-    color: colors.text,
-  },
-  subtitle: {
-    ...type.caption,
-    ...numeric,
-    color: colors.textSecondary,
-  },
-  empty: {
-    ...type.caption,
-    color: colors.textTertiary,
-  },
   hitRateText: {
     ...type.caption,
     ...numeric,

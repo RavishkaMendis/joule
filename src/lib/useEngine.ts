@@ -26,6 +26,7 @@ import { addDaysISO } from '../engine/date';
 import { getAcceptedTargets, type StoredTargets } from './targetsStore';
 import { getDatabase } from './db';
 import { todayLocalISO } from './localDate';
+import { filterIntakeForEngine } from './engineInput';
 
 /** How much history to pull for the TDEE computation. Generous but bounded. */
 const HISTORY_WINDOW_DAYS = 120;
@@ -123,7 +124,10 @@ export function useEngine(db?: Database): EngineState {
       const intake = intakeRows.map(toDayIntake);
       const weights = weightRows.map(toWeightLog);
 
-      const result = computeTDEE(intake, weights, resolvedProfile);
+      // See src/lib/engineInput.ts: drop today's in-progress rollup and
+      // any phantom empty rollup before the engine ever sees them. Weight
+      // readings are untouched — only the intake series is filtered.
+      const result = computeTDEE(filterIntakeForEngine(intake, today), weights, resolvedProfile);
 
       setProfile(resolvedProfile);
       setTdee(result);

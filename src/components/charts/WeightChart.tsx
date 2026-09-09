@@ -12,6 +12,7 @@
 import { View, Text, StyleSheet } from 'react-native';
 import Svg, { Circle, Polyline } from 'react-native-svg';
 import { colors, numeric, spacing, type } from '../../lib/theme';
+import { chartCard } from './chartCard';
 import { linearScale, numericExtent, padDomain } from '../../lib/chartScale';
 import type { WeightChartPoint } from '../../lib/useTrendsData';
 
@@ -25,9 +26,9 @@ const CHART_PADDING = { top: 12, bottom: 12, left: 8, right: 8 };
 export function WeightChart({ series, height = 160 }: Props) {
   if (series.length === 0) {
     return (
-      <View style={styles.container}>
-        <Text style={styles.title}>Weight</Text>
-        <Text style={styles.empty}>No weigh-ins yet — log your first this morning.</Text>
+      <View style={chartCard.container}>
+        <Text style={chartCard.title}>Weight</Text>
+        <Text style={chartCard.empty}>No weigh-ins yet — log your first this morning.</Text>
       </View>
     );
   }
@@ -51,10 +52,10 @@ export function WeightChart({ series, height = 160 }: Props) {
   const last = series[series.length - 1];
 
   return (
-    <View style={styles.container}>
-      <View style={styles.headerRow}>
-        <Text style={styles.title}>Weight</Text>
-        <Text style={styles.subtitle}>{last.smoothedKg.toFixed(1)} kg smoothed</Text>
+    <View style={chartCard.container}>
+      <View style={chartCard.headerRow}>
+        <Text style={chartCard.title}>Weight</Text>
+        <Text style={chartCard.subtitle}>{last.smoothedKg.toFixed(1)} kg smoothed</Text>
       </View>
       <Svg width={width} height={height}>
         {/* Raw readings: faint dots — the "noise cloud" PRD §9.2 wants visible. */}
@@ -75,34 +76,6 @@ export function WeightChart({ series, height = 160 }: Props) {
 }
 
 const styles = StyleSheet.create({
-  container: {
-    backgroundColor: colors.surface,
-    borderRadius: 12,
-    padding: spacing.md,
-    marginHorizontal: spacing.lg,
-    marginBottom: spacing.md,
-    borderWidth: StyleSheet.hairlineWidth,
-    borderColor: colors.border,
-  },
-  headerRow: {
-    flexDirection: 'row',
-    justifyContent: 'space-between',
-    alignItems: 'baseline',
-    marginBottom: spacing.sm,
-  },
-  title: {
-    ...type.bodyStrong,
-    color: colors.text,
-  },
-  subtitle: {
-    ...type.caption,
-    ...numeric,
-    color: colors.textSecondary,
-  },
-  empty: {
-    ...type.caption,
-    color: colors.textTertiary,
-  },
   axisRow: {
     flexDirection: 'row',
     justifyContent: 'space-between',

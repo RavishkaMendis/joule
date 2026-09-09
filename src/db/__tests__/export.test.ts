@@ -274,4 +274,58 @@ describe('import', () => {
     ]);
     expect(row?.is_complete).toBe(1);
   });
+
+  // AUDIT FIX: day_intake is a derived rollup of food_entry
+  // (intakeRepo.ts's own header: "no other code should hand-write
+  // day_intake's numeric columns"). The old importDayIntakeCsv wrote
+  // day_intake directly, so the imported total looked right only until the
+  // NEXT recomputeDay for that date — triggered by adding/editing ANY
+  // food_entry for it, even an unrelated one — at which point recomputeDay
+  // re-derived the row from food_entry alone and silently threw the
+  // imported history away. This must not happen: an imported day's total
+  // has to survive a later food_entry add for the same date.
+  it('an imported day_intake total survives a later food_entry add for the same date', async () => {
+    const csv = 'date,kcal,protein_g,carbs_g,fat_g,is_complete\r\n2026-08-01,1800,100,200,60,1\r\n';
+    await importDayIntakeCsv(db, csv);
+
+    const afterImport = await db.getFirstAsync<{ kcal: number }>('SELECT kcal FROM day_intake WHERE date = ?', [
+      '2026-08-01',
+    ]);
+    expect(afterImport?.kcal).toBe(1800);
+
+    // A later, completely unrelated food_entry for the same date (the
+    // real-world trigger: the user corrects/adds one item weeks after
+    // restoring a backup).
+    await foodRepo.addEntry(db, {
+      id: 'apple1',
+      date: '2026-08-01',
+      logged_at: 5000,
+      name: 'Apple',
+      grams: 150,
+      kcal: 95,
+      protein_g: 0.5,
+      carbs_g: 25,
+      fat_g: 0.3,
+      source: 'manual',
+      confidence: 'exact',
+    });
+
+    const afterEdit = await db.getFirstAsync<{ kcal: number }>('SELECT kcal FROM day_intake WHERE date = ?', [
+      '2026-08-01',
+    ]);
+    // The imported 1800 kcal must still be represented (as a backing
+    // food_entry row), not wiped down to just the new apple's 95 kcal.
+    expect(afterEdit?.kcal).toBe(1895);
+  });
+
+  it('re-importing the same day_intake CSV is idempotent (upserts the same synthetic entry, never doubles it)', async () => {
+    const csv = 'date,kcal,protein_g,carbs_g,fat_g,is_complete\r\n2026-08-01,1800,100,200,60,1\r\n';
+    await importDayIntakeCsv(db, csv);
+    await importDayIntakeCsv(db, csv);
+
+    const row = await db.getFirstAsync<{ kcal: number }>('SELECT kcal FROM day_intake WHERE date = ?', ['2026-08-01']);
+    expect(row?.kcal).toBe(1800);
+    const entries = await db.getAllAsync('SELECT * FROM food_entry WHERE date = ?', ['2026-08-01']);
+    expect(entries).toHaveLength(1);
+  });
 });

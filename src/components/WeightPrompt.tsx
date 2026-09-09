@@ -29,8 +29,11 @@ export function WeightPrompt({ onPress }: Props) {
 
 const styles = StyleSheet.create({
   container: {
+    // No marginTop here — TodayScreen places its own spacer above this
+    // (tightSpacer), matching how the check-in/first-run banners in the
+    // same "one next action" slot get their spacing purely from the
+    // spacer, not a mix of spacer-plus-internal-margin.
     marginHorizontal: spacing.lg,
-    marginTop: spacing.md,
     backgroundColor: colors.surface,
     borderRadius: radii.md,
     paddingHorizontal: spacing.md,

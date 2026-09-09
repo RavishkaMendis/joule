@@ -21,6 +21,7 @@
 import { View, Text, StyleSheet } from 'react-native';
 import Svg, { Polygon, Polyline } from 'react-native-svg';
 import { colors, numeric, spacing, type } from '../../lib/theme';
+import { chartCard } from './chartCard';
 import { linearScale, numericExtent, padDomain } from '../../lib/chartScale';
 import { dayOffset } from '../../engine/date';
 import type { TDEEChartPoint, ZeppChartPoint } from '../../lib/useTrendsData';
@@ -63,9 +64,9 @@ function strapBiasLabel(bias: StrapBiasResult | undefined): string | null {
 export function TDEEChart({ series, latest, zeppSeries = [], strapBias, height = 160 }: Props) {
   if (series.length === 0 || !latest) {
     return (
-      <View style={styles.container}>
-        <Text style={styles.title}>TDEE</Text>
-        <Text style={styles.empty}>Log intake and weight for a few days to start estimating.</Text>
+      <View style={chartCard.container}>
+        <Text style={chartCard.title}>TDEE</Text>
+        <Text style={chartCard.empty}>Log intake and weight for a few days to start estimating.</Text>
       </View>
     );
   }
@@ -113,10 +114,10 @@ export function TDEEChart({ series, latest, zeppSeries = [], strapBias, height =
   const biasLabel = strapBiasLabel(strapBias);
 
   return (
-    <View style={styles.container}>
-      <View style={styles.headerRow}>
-        <Text style={styles.title}>TDEE</Text>
-        <Text style={styles.subtitle}>
+    <View style={chartCard.container}>
+      <View style={chartCard.headerRow}>
+        <Text style={chartCard.title}>TDEE</Text>
+        <Text style={chartCard.subtitle}>
           {Math.round(latest.tdee)} ±{bandHalfWidth} kcal
         </Text>
       </View>
@@ -145,34 +146,6 @@ export function TDEEChart({ series, latest, zeppSeries = [], strapBias, height =
 }
 
 const styles = StyleSheet.create({
-  container: {
-    backgroundColor: colors.surface,
-    borderRadius: 12,
-    padding: spacing.md,
-    marginHorizontal: spacing.lg,
-    marginBottom: spacing.md,
-    borderWidth: StyleSheet.hairlineWidth,
-    borderColor: colors.border,
-  },
-  headerRow: {
-    flexDirection: 'row',
-    justifyContent: 'space-between',
-    alignItems: 'baseline',
-    marginBottom: spacing.sm,
-  },
-  title: {
-    ...type.bodyStrong,
-    color: colors.text,
-  },
-  subtitle: {
-    ...type.caption,
-    ...numeric,
-    color: colors.textSecondary,
-  },
-  empty: {
-    ...type.caption,
-    color: colors.textTertiary,
-  },
   qualityLabel: {
     ...type.small,
     color: colors.textTertiary,

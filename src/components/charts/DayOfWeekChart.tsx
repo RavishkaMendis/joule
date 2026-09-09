@@ -11,7 +11,8 @@
 
 import { View, Text, StyleSheet } from 'react-native';
 import Svg, { Rect } from 'react-native-svg';
-import { colors, numeric, spacing, type } from '../../lib/theme';
+import { colors, spacing, type } from '../../lib/theme';
+import { chartCard } from './chartCard';
 import { linearScale } from '../../lib/chartScale';
 import type { DayOfWeekPoint } from '../../lib/analytics/dayOfWeekPattern';
 
@@ -28,9 +29,9 @@ export function DayOfWeekChart({ pattern, height = 150 }: Props) {
 
   if (withData.length === 0) {
     return (
-      <View style={styles.container}>
-        <Text style={styles.title}>By day of week</Text>
-        <Text style={styles.empty}>Needs a few logged days spread across different weekdays to show a pattern.</Text>
+      <View style={chartCard.container}>
+        <Text style={chartCard.title}>By day of week</Text>
+        <Text style={chartCard.empty}>Needs a few logged days spread across different weekdays to show a pattern.</Text>
       </View>
     );
   }
@@ -48,10 +49,10 @@ export function DayOfWeekChart({ pattern, height = 150 }: Props) {
   const overallAvg = withData.reduce((sum, p) => sum + (p.avgKcal as number), 0) / withData.length;
 
   return (
-    <View style={styles.container}>
-      <View style={styles.headerRow}>
-        <Text style={styles.title}>By day of week</Text>
-        <Text style={styles.subtitle}>avg {Math.round(overallAvg)} kcal</Text>
+    <View style={chartCard.container}>
+      <View style={chartCard.headerRow}>
+        <Text style={chartCard.title}>By day of week</Text>
+        <Text style={chartCard.subtitle}>avg {Math.round(overallAvg)} kcal</Text>
       </View>
       <Svg width={width} height={height}>
         {pattern.map((day, i) => {
@@ -88,34 +89,6 @@ export function DayOfWeekChart({ pattern, height = 150 }: Props) {
 }
 
 const styles = StyleSheet.create({
-  container: {
-    backgroundColor: colors.surface,
-    borderRadius: 12,
-    padding: spacing.md,
-    marginHorizontal: spacing.lg,
-    marginBottom: spacing.md,
-    borderWidth: StyleSheet.hairlineWidth,
-    borderColor: colors.border,
-  },
-  headerRow: {
-    flexDirection: 'row',
-    justifyContent: 'space-between',
-    alignItems: 'baseline',
-    marginBottom: spacing.sm,
-  },
-  title: {
-    ...type.bodyStrong,
-    color: colors.text,
-  },
-  subtitle: {
-    ...type.caption,
-    ...numeric,
-    color: colors.textSecondary,
-  },
-  empty: {
-    ...type.caption,
-    color: colors.textTertiary,
-  },
   labelRow: {
     flexDirection: 'row',
   },
