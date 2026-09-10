@@ -1,0 +1,14 @@
+{
+  "builds": [
+    {
+      "src": "api/gemini.js",
+      "use": "@vercel/node"
+    }
+  ],
+  "routes": [
+    {
+      "src": "/api/gemini",
+      "dest": "/api/gemini.js"
+    }
+  ]
+}

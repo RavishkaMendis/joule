@@ -59,3 +59,12 @@ a path-traversal surface.
 No rate limiting. Vercel serverless functions don't share memory between
 invocations, so an in-process counter would be theatre. If quota abuse ever becomes
 real, use Vercel KV or Upstash — deliberately not faked here.
+
+## Why `vercel.json` exists
+
+Vercel's zero-config detection did not pick up `api/gemini.js` even with the
+project's Root Directory set to `proxy` — a push produced a deployment that
+built in 289ms with no functions at all, and `/api/gemini` returned 404 where
+the previous CLI deployment had served it. `builds` + `routes` states the one
+function explicitly instead of relying on convention. There is exactly one
+function here, so nothing is lost by opting out of zero-config.
