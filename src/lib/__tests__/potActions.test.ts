@@ -52,6 +52,13 @@ import {
   duplicatePotForCookAgain,
   potRemainingStatusFromFields,
   potRemainingStatus,
+  deletePot,
+  countPotServings,
+  isPotDismissedFromToday,
+  dismissPotFromToday,
+  undismissPotFromToday,
+  getPotsDismissedFromToday,
+  resetPotTodayDismissedTableForTesting,
   type CurrentIngredientRow,
 } from '../potActions';
 import type { Database } from '../../db/database';
@@ -1058,6 +1065,152 @@ describe('finishPot / reopenPot', () => {
 
     const result = await logPotServing(db, { potId: pot.id, date: '2026-08-01', mode: 'tared', scaleReadingG: 200 });
     expect(result.ok).toBe(true);
+  });
+
+  // Task brief #2 (the owner's own words: "I didn't finish the whole
+  // pot... the rest was thrown out"): finishing a pot with food still in
+  // it must NEVER log the unconsumed remainder as food eaten. This is
+  // proven here, not just asserted by reading finishPot/archivePot's own
+  // doc comment.
+  it('never writes a food_entry row for the unconsumed remainder, and never touches day_intake for a day nothing was logged on', async () => {
+    const db = await freshDb();
+    const pot = await createPot(db, {
+      name: 'Big batch',
+      totalWeightG: 1000,
+      ingredients: [{ name: 'x', grams: 1000, kcal: 1500, protein_g: 100, carbs_g: 150, fat_g: 30, confidence: 'exact' }],
+    });
+    // One real serving, genuinely eaten and logged.
+    await logPotServing(db, { potId: pot.id, date: '2026-08-01', mode: 'tared', scaleReadingG: 300 });
+    const entriesBefore = await db.getAllAsync<{ id: string }>('SELECT id FROM food_entry');
+
+    // "The rest was thrown out" — finish the pot with 700g of computed
+    // remainder still sitting in it.
+    const finished = await finishPot(db, pot.id);
+    expect(finished.remaining_g).toBe(700);
+
+    // No new food_entry row was created for that 700g.
+    const entriesAfter = await db.getAllAsync<{ id: string }>('SELECT id FROM food_entry');
+    expect(entriesAfter).toEqual(entriesBefore);
+    expect(entriesAfter).toHaveLength(1);
+
+    // day_intake for a date nothing was explicitly logged on stays exactly
+    // as it was (never fabricated by finishing) — the engine never sees a
+    // phantom "ate the rest of the pot" day.
+    const today = new Date().toISOString().slice(0, 10);
+    expect(await intakeRepo.getDay(db, today)).toBeNull();
+
+    // The one real, explicitly-logged serving is exactly what it was —
+    // finishing didn't rewrite it either.
+    const day = await intakeRepo.getDay(db, '2026-08-01');
+    expect(day?.kcal).toBeCloseTo(450, 5); // 300g * 1.5 kcal/g, never 1000g's worth
+  });
+});
+
+// ═══════════════════════════════════════════════════════════════════════
+// DELETE (task brief, the owner's own words: "can you make sure I have the
+// option to remove pots?"). The constraint that matters most: deleting a
+// pot must never rewrite the user's eating history. See potRepo.test.ts
+// for the load-bearing repo-layer proof (every food_entry row, its
+// macros, and the day_intake rollup survive byte-for-byte); these tests
+// cover the thin potActions wrappers themselves.
+// ═══════════════════════════════════════════════════════════════════════
+describe('deletePot / countPotServings (potActions wrappers)', () => {
+  it('deletePot removes the pot and leaves its logged servings in place', async () => {
+    const db = await freshDb();
+    const pot = await createPot(db, {
+      name: 'Batch',
+      totalWeightG: 1000,
+      ingredients: [{ name: 'x', grams: 1000, kcal: 1500, protein_g: 100, carbs_g: 150, fat_g: 30, confidence: 'exact' }],
+    });
+    const result = await logPotServing(db, { potId: pot.id, date: '2026-08-01', mode: 'tared', scaleReadingG: 300 });
+    if (!result.ok) throw new Error('expected logPotServing to succeed');
+    const entryId = result.entry.id;
+
+    expect(await countPotServings(db, pot.id)).toBe(1);
+
+    await deletePot(db, pot.id);
+
+    expect(await potRepo.getPot(db, pot.id)).toBeNull();
+    const survivingEntry = await db.getFirstAsync<{ id: string }>('SELECT id FROM food_entry WHERE id = ?', [entryId]);
+    expect(survivingEntry?.id).toBe(entryId);
+    const day = await intakeRepo.getDay(db, '2026-08-01');
+    expect(day?.kcal).toBeCloseTo(450, 5);
+  });
+
+  it('countPotServings is 0 for a freshly-created pot with nothing logged from it', async () => {
+    const db = await freshDb();
+    const pot = await createPot(db, {
+      name: 'New batch',
+      totalWeightG: 1000,
+      ingredients: [{ name: 'x', grams: 1000, kcal: 1000, protein_g: 10, carbs_g: 10, fat_g: 10, confidence: 'exact' }],
+    });
+    expect(await countPotServings(db, pot.id)).toBe(0);
+  });
+
+  it('deletePot is idempotent — deleting an unknown/already-deleted pot id does not throw', async () => {
+    const db = await freshDb();
+    await expect(deletePot(db, 'never-existed')).resolves.toBeUndefined();
+  });
+});
+
+// ═══════════════════════════════════════════════════════════════════════
+// DISMISS FROM TODAY (task brief, the owner's own words: "I see the pot in
+// the home page right now, which can be removed too") — distinct from
+// finishPot: this never changes is_active, remaining_g, or anything else
+// about the pot. It is purely what ActivePotsRow filters against.
+// ═══════════════════════════════════════════════════════════════════════
+describe('dismissPotFromToday / undismissPotFromToday / isPotDismissedFromToday / getPotsDismissedFromToday', () => {
+  let db: Database;
+  beforeEach(async () => {
+    db = await freshDb();
+    resetPotTodayDismissedTableForTesting();
+  });
+
+  it('defaults to not dismissed', async () => {
+    expect(await isPotDismissedFromToday(db, 'pot1')).toBe(false);
+    expect(await getPotsDismissedFromToday(db)).toEqual(new Set());
+  });
+
+  it('is dismissed after dismissPotFromToday and stays dismissed until explicitly undone', async () => {
+    await dismissPotFromToday(db, 'pot1', 12345);
+    expect(await isPotDismissedFromToday(db, 'pot1')).toBe(true);
+    expect(await getPotsDismissedFromToday(db)).toEqual(new Set(['pot1']));
+
+    await undismissPotFromToday(db, 'pot1');
+    expect(await isPotDismissedFromToday(db, 'pot1')).toBe(false);
+    expect(await getPotsDismissedFromToday(db)).toEqual(new Set());
+  });
+
+  it('dismissal is per-pot — dismissing one pot does not affect another', async () => {
+    await dismissPotFromToday(db, 'pot1');
+    expect(await isPotDismissedFromToday(db, 'pot1')).toBe(true);
+    expect(await isPotDismissedFromToday(db, 'pot2')).toBe(false);
+    expect(await getPotsDismissedFromToday(db)).toEqual(new Set(['pot1']));
+  });
+
+  it('dismissing/undismissing is idempotent', async () => {
+    await dismissPotFromToday(db, 'pot1');
+    await dismissPotFromToday(db, 'pot1');
+    expect(await isPotDismissedFromToday(db, 'pot1')).toBe(true);
+
+    await undismissPotFromToday(db, 'pot1');
+    await undismissPotFromToday(db, 'pot1');
+    expect(await isPotDismissedFromToday(db, 'pot1')).toBe(false);
+  });
+
+  it('never touches is_active/remaining_g — dismissing from Today is independent of finishPot/archivePot', async () => {
+    const pot = await createPot(db, {
+      name: 'Batch',
+      totalWeightG: 1000,
+      ingredients: [{ name: 'x', grams: 1000, kcal: 1000, protein_g: 10, carbs_g: 10, fat_g: 10, confidence: 'exact' }],
+    });
+
+    await dismissPotFromToday(db, pot.id);
+
+    const stillPot = await potRepo.getPot(db, pot.id);
+    expect(stillPot?.is_active).toBe(1);
+    expect(stillPot?.remaining_g).toBe(1000);
+    expect(await potRepo.getActivePots(db)).toHaveLength(1);
   });
 });
 

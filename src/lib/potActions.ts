@@ -88,6 +88,27 @@ export async function reopenPot(db: Database, potId: string): Promise<PotRow> {
 }
 
 // ─────────────────────────────────────────────────────────────────────────
+// DELETE (task brief, the owner's own words: "can you make sure I have the
+// option to remove pots?"). Thin id-free passthroughs to potRepo, same
+// pattern as finishPot/reopenPot above — see potRepo.deletePot's own doc
+// for the guarantee that actually matters here: this NEVER touches a
+// food_entry row, even one logged from this exact pot. That guarantee is
+// what makes "delete outright" safe to offer at all, distinct from
+// finishPot (which stops a pot showing as active but keeps the row) and
+// dismissPotFromToday below (which only ever affects what Today renders).
+// ─────────────────────────────────────────────────────────────────────────
+
+/** Deletes a pot outright. Idempotent. Never touches food_entry — see potRepo.deletePot's own doc. */
+export async function deletePot(db: Database, potId: string): Promise<void> {
+  return potRepo.deletePot(db, potId);
+}
+
+/** How many food_entry rows were logged from this pot — purely to word a delete confirmation honestly, never to gate whether deletion is allowed. */
+export async function countPotServings(db: Database, potId: string): Promise<number> {
+  return potRepo.countPotServings(db, potId);
+}
+
+// ─────────────────────────────────────────────────────────────────────────
 // "COOK THIS AGAIN" (task brief: "an old pot is a recipe... the single
 // most valuable thing here for someone who meal-preps weekly"). Duplicates
 // ANY pot — finished or still active — into a brand new, fully independent
@@ -766,6 +787,91 @@ export async function dismissFatPlausibilityNote(db: Database, potId: string, di
 /** Test-only: forget the "table ensured" cache so tests against fresh in-memory DBs re-create it. */
 export function resetPotFatNoteTableForTesting(): void {
   potFatNoteTableEnsured = false;
+}
+
+// ─────────────────────────────────────────────────────────────────────────
+// DISMISS FROM TODAY (task brief, the owner's own words: "I see the pot in
+// the home page right now, which can be removed too"). ActivePotsRow
+// surfaces every active pot on Today as a one-tap serving chip — this is
+// the explicit, reversible way to declutter that row for a pot the user is
+// still working through but doesn't want sitting there, WITHOUT finishing
+// it (finishPot/archivePot, above, is a different, stronger statement: "I'm
+// done with this batch"). A dismissed pot:
+//   - keeps is_active = 1 (still a normal active pot everywhere else —
+//     FoodsScreen's Active tab, PotQuickAccessScreen, PotLogServing);
+//   - simply doesn't render as a chip in ActivePotsRow (see that
+//     component's own load()).
+//
+// Same "small per-entity preference, not worth a schema migration" shape
+// and CREATE TABLE IF NOT EXISTS app_* convention as
+// app_pot_fat_note_dismissed/app_pot_nudge directly above/below this
+// section — deliberately a SEPARATE table from both: this is per-pot (like
+// the fat note) but reversible in both directions (unlike the fat note,
+// which is a one-way "never show again"; unlike the single-flag nudge,
+// which is app-wide). Toggled from two places: a long-press on the Today
+// chip itself (ActivePotsRow — the fast, "quick, not a trip through three
+// screens" path the task brief asks for) and an explicit "Hide from
+// Today"/"Show on Today" link on PotLogServingScreen (the guaranteed-
+// reachable path back, independent of ever touching that chip again).
+//
+// Deliberately never cleared as a side effect of anything else (not by
+// logServing, not by editing the pot) — same "explicit action, never an
+// inferred one" principle archivePot/reopenPot's own doc already commits
+// this codebase to for pot state changes.
+// ─────────────────────────────────────────────────────────────────────────
+
+const ENSURE_POT_TODAY_DISMISSED_TABLE_SQL = `
+CREATE TABLE IF NOT EXISTS app_pot_today_dismissed (
+  pot_id TEXT PRIMARY KEY,
+  dismissed_at INTEGER NOT NULL
+);
+`;
+
+let potTodayDismissedTableEnsured = false;
+
+async function ensurePotTodayDismissedTable(db: Database): Promise<void> {
+  if (potTodayDismissedTableEnsured) return;
+  await db.execAsync(ENSURE_POT_TODAY_DISMISSED_TABLE_SQL);
+  potTodayDismissedTableEnsured = true;
+}
+
+/** Whether this pot has been dismissed from the Today screen's active-pots row. */
+export async function isPotDismissedFromToday(db: Database, potId: string): Promise<boolean> {
+  await ensurePotTodayDismissedTable(db);
+  const row = await db.getFirstAsync<{ pot_id: string }>('SELECT pot_id FROM app_pot_today_dismissed WHERE pot_id = ?', [potId]);
+  return row !== null;
+}
+
+/**
+ * Every dismissed pot id, in one query — what ActivePotsRow filters
+ * `getActivePots()`'s result against, so rendering the row never costs one
+ * query per pot.
+ */
+export async function getPotsDismissedFromToday(db: Database): Promise<Set<string>> {
+  await ensurePotTodayDismissedTable(db);
+  const rows = await db.getAllAsync<{ pot_id: string }>('SELECT pot_id FROM app_pot_today_dismissed');
+  return new Set(rows.map((r) => r.pot_id));
+}
+
+/** Hides a pot from Today's active-pots row. Idempotent. Never touches is_active/remaining_g/anything else about the pot. */
+export async function dismissPotFromToday(db: Database, potId: string, dismissedAt: number = Date.now()): Promise<void> {
+  await ensurePotTodayDismissedTable(db);
+  await db.runAsync(
+    `INSERT INTO app_pot_today_dismissed (pot_id, dismissed_at) VALUES (?, ?)
+     ON CONFLICT(pot_id) DO UPDATE SET dismissed_at = excluded.dismissed_at`,
+    [potId, dismissedAt]
+  );
+}
+
+/** The explicit reverse — puts a pot back on Today's active-pots row. Idempotent. */
+export async function undismissPotFromToday(db: Database, potId: string): Promise<void> {
+  await ensurePotTodayDismissedTable(db);
+  await db.runAsync('DELETE FROM app_pot_today_dismissed WHERE pot_id = ?', [potId]);
+}
+
+/** Test-only: forget the "table ensured" cache so tests against fresh in-memory DBs re-create it. */
+export function resetPotTodayDismissedTableForTesting(): void {
+  potTodayDismissedTableEnsured = false;
 }
 
 // ─────────────────────────────────────────────────────────────────────────

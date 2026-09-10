@@ -424,6 +424,66 @@ export async function reopenPot(db: Database, id: string): Promise<PotRow> {
   return row;
 }
 
+/**
+ * Number of `food_entry` rows already logged from this pot (`source = 'pot'
+ * AND pot_id = id`) — used purely to word a delete confirmation honestly
+ * ("the 6 servings you already logged stay in your diary"), never to decide
+ * whether deletion is allowed. Deleting a pot with logged servings is
+ * always permitted; see `deletePot`'s own doc for why.
+ */
+export async function countPotServings(db: Database, id: string): Promise<number> {
+  const row = await db.getFirstAsync<{ n: number }>(
+    "SELECT COUNT(*) AS n FROM food_entry WHERE pot_id = ? AND source = 'pot'",
+    [id]
+  );
+  return row?.n ?? 0;
+}
+
+/**
+ * Deletes a pot outright (task brief: "make sure I have the option to
+ * remove pots"). Idempotent — deleting an already-deleted/unknown id is a
+ * no-op, matching `archivePot`/`reopenPot`'s own idempotency rather than
+ * throwing on a double-tap or a stale screen.
+ *
+ * DELIBERATELY touches ONLY the `pot` row — this is the one guarantee this
+ * whole feature exists to protect (task brief: "deleting a pot must not
+ * silently rewrite the user's eating history"). Every `food_entry` row
+ * already logged from this pot (source='pot', pot_id=id) is a REAL record
+ * of food that was REALLY eaten and is the TDEE engine's input; it is never
+ * touched, never re-pointed, never re-summed. Concretely:
+ *
+ *   - No `DELETE FROM food_entry WHERE pot_id = ?` — that would silently
+ *     erase real logged calories/macros out of the user's history and
+ *     corrupt every day_intake rollup (and therefore the engine) touching
+ *     those dates, exactly the class of bug CLAUDE.md calls out.
+ *   - No `UPDATE food_entry SET pot_id = NULL WHERE pot_id = ?` either.
+ *     `food_entry.pot_id` is declared as plain TEXT with no `REFERENCES`
+ *     clause specifically so a soft-link can outlive the row it points to
+ *     (see schema.ts's SCHEMA_V5_SQL header, which documents this exact
+ *     "orphaned id after the thing it points to is deleted" tradeoff for
+ *     `supplement_log.supplement_id` and calls `food_entry.pot_id` the
+ *     precedent). Nothing in this app ever looks a `food_entry` back up by
+ *     its `pot_id` at render time (every entry already carries its own
+ *     name/kcal/macros, captured at logging time) — `pot_id` after this
+ *     runs is exactly as inert as it already is for a `source != 'pot'`
+ *     entry that never had one. Clearing it would only destroy provenance
+ *     (export/backup's own record of "this entry came from that batch")
+ *     for zero behavioural benefit.
+ *
+ * Verified by test (potRepo.test.ts): deleting a pot with logged servings
+ * leaves every one of those `food_entry` rows, their kcal/macros, and the
+ * `day_intake` rollup for their dates completely unchanged.
+ *
+ * `pot_container` rows are untouched too, but for a different reason: a
+ * saved container (tare weight) was never owned by a specific pot in the
+ * first place (no `pot_id` column on that table at all — see schema.ts) —
+ * it is shared across every pot, so there is nothing pot-specific to clean
+ * up there.
+ */
+export async function deletePot(db: Database, id: string): Promise<void> {
+  await db.runAsync('DELETE FROM pot WHERE id = ?', [id]);
+}
+
 // ─────────────────────────────────────────────────────────────────────────
 // POT CONTAINERS (schema v6) — saved tare weights for one-tap reuse at
 // serving time. PRD-driven (task brief, the user's own words): "sometimes

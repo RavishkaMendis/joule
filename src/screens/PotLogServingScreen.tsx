@@ -48,7 +48,7 @@
 // ═══════════════════════════════════════════════════════════════════════
 
 import { useCallback, useEffect, useState } from 'react';
-import { KeyboardAvoidingView, Platform, Pressable, ScrollView, StyleSheet, Text, TextInput, View } from 'react-native';
+import { Alert, KeyboardAvoidingView, Platform, Pressable, ScrollView, StyleSheet, Text, TextInput, View } from 'react-native';
 import { useNavigation, useRoute } from '@react-navigation/native';
 import type { NativeStackNavigationProp } from '@react-navigation/native-stack';
 import type { RouteProp } from '@react-navigation/native';
@@ -64,6 +64,8 @@ import {
   saveContainer,
   renameContainer,
   deleteContainer,
+  deletePot,
+  countPotServings,
   potConfidenceSummary,
   formatPotConfidence,
   setPotCookedWeight,
@@ -71,6 +73,9 @@ import {
   potFatPlausibility,
   isFatPlausibilityNoteDismissed,
   dismissFatPlausibilityNote,
+  isPotDismissedFromToday,
+  dismissPotFromToday,
+  undismissPotFromToday,
   isWeighedPot,
   finishPot,
   reopenPot,
@@ -120,6 +125,13 @@ export function PotLogServingScreen() {
   // nothing rather than flash the note on for a beat).
   const [fatNoteDismissed, setFatNoteDismissed] = useState<boolean | null>(null);
 
+  // "Hide from Today" (task brief: dismiss from the home screen without
+  // deleting/finishing it) — same `null` = "not loaded yet" convention as
+  // the fat note above. This is the guaranteed-reachable reverse of
+  // ActivePotsRow's long-press: a pot dismissed there stays reachable and
+  // un-dismissable from here even if the user never sees that chip again.
+  const [dismissedFromToday, setDismissedFromToday] = useState<boolean | null>(null);
+
   // Container rename/delete UI (task brief: "the repo functions exist,
   // the screen doesn't expose them" — deleteContainer already did;
   // renameContainer is new, see potActions.ts/potRepo.ts). Collapsed
@@ -138,15 +150,17 @@ export function PotLogServingScreen() {
     let cancelled = false;
     (async () => {
       const db = await getDatabase();
-      const [row, savedContainers, dismissed] = await Promise.all([
+      const [row, savedContainers, dismissed, dismissedToday] = await Promise.all([
         potRepo.getPot(db, potId),
         potRepo.getContainers(db),
         isFatPlausibilityNoteDismissed(db, potId),
+        isPotDismissedFromToday(db, potId),
       ]);
       if (cancelled) return;
       setPot(row);
       setContainers(savedContainers);
       setFatNoteDismissed(dismissed);
+      setDismissedFromToday(dismissedToday);
     })();
     return () => {
       cancelled = true;
@@ -225,6 +239,62 @@ export function PotLogServingScreen() {
     } finally {
       setPotActionBusy(false);
     }
+  };
+
+  /**
+   * "Hide from Today" / "Show on Today" toggle — the guaranteed-reachable
+   * reverse of ActivePotsRow's long-press (task brief: hiding a pot "must
+   * not make its logged servings unreachable" — nor the pot itself
+   * un-hideable). Low-stakes preference, same optimistic-update pattern as
+   * the fat-plausibility note dismissal above rather than a loading state.
+   */
+  const handleToggleDismissFromToday = async () => {
+    if (!pot || dismissedFromToday === null) return;
+    const next = !dismissedFromToday;
+    setDismissedFromToday(next); // optimistic
+    const db = await getDatabase();
+    if (next) {
+      await dismissPotFromToday(db, pot.id);
+    } else {
+      await undismissPotFromToday(db, pot.id);
+    }
+  };
+
+  /**
+   * "Delete pot" (task brief, the owner's own words: "make sure I have the
+   * option to remove pots"). The confirmation names exactly what will and
+   * will not happen — task brief's explicit requirement, and the one place
+   * this matters most: `deletePot` NEVER touches a `food_entry` row (see
+   * potRepo.deletePot's own doc), so the copy says so honestly rather than
+   * a generic "are you sure?". `countPotServings` is read fresh right
+   * before asking, so the number in the dialog is never stale.
+   */
+  const handleDeletePot = async () => {
+    if (!pot || potActionBusy) return;
+    const db = await getDatabase();
+    const servingCount = await countPotServings(db, pot.id);
+    const keepsMessage =
+      servingCount > 0
+        ? `The ${servingCount} serving${servingCount === 1 ? '' : 's'} you already logged from it stay in your diary — deleting the pot never changes what you ate. This can't be undone.`
+        : "Nothing has been logged from it yet, so there's nothing else to keep. This can't be undone.";
+    Alert.alert('Delete this pot?', keepsMessage, [
+      { text: 'Cancel', style: 'cancel' },
+      {
+        text: 'Delete',
+        style: 'destructive',
+        onPress: () => {
+          void (async () => {
+            setPotActionBusy(true);
+            try {
+              await deletePot(db, pot.id);
+              navigation.goBack();
+            } finally {
+              setPotActionBusy(false);
+            }
+          })();
+        },
+      },
+    ]);
   };
 
   const startRenameContainer = (c: PotContainerRow) => {
@@ -333,6 +403,18 @@ export function PotLogServingScreen() {
     </Pressable>
   );
 
+  // "Delete pot" (task brief: "make sure I have the option to remove
+  // pots") — available regardless of active/finished state, same as Edit.
+  // Quiet, full-width, bottom-of-screen text link, matching
+  // WorkoutSessionScreen's "Delete session" exactly (PRD §10: no red, no
+  // guilt — severity is carried by the confirmation copy in
+  // handleDeletePot, never by colour).
+  const deleteLink = (
+    <Pressable onPress={() => void handleDeletePot()} disabled={potActionBusy} style={styles.deletePotButton} accessibilityRole="button">
+      <Text style={styles.deletePotText}>Delete pot</Text>
+    </Pressable>
+  );
+
   // Task brief: "an archived pot is a recipe... reachable and reopenable."
   // A finished pot no longer disappears from the app — it lands here with
   // its own view: the batch's own numbers (honest whether or not there was
@@ -388,6 +470,8 @@ export function PotLogServingScreen() {
               <Text style={styles.cancelText}>Back</Text>
             </Pressable>
           </View>
+
+          {deleteLink}
         </ScrollView>
       </KeyboardAvoidingView>
     );
@@ -402,6 +486,19 @@ export function PotLogServingScreen() {
       <Text style={styles.editLink}>Finish pot</Text>
     </Pressable>
   );
+
+  // "Hide from Today" / "Show on Today" (task brief: dismiss the pot from
+  // Today without finishing/deleting it) — only meaningful for an active
+  // pot (ActivePotsRow only ever renders active pots), so this link only
+  // exists on this side of the archived-branch return. `null` while the
+  // dismissal state hasn't loaded yet renders nothing rather than flash a
+  // wrong label for a beat, same convention as the fat-plausibility note.
+  const dismissTodayLink =
+    dismissedFromToday !== null ? (
+      <Pressable onPress={() => void handleToggleDismissFromToday()} accessibilityRole="button" hitSlop={8}>
+        <Text style={styles.editLink}>{dismissedFromToday ? 'Show on Today' : 'Hide from Today'}</Text>
+      </Pressable>
+    ) : null;
 
   // Task brief #1: "Capture the cooked weight at first serve if it's
   // missing — that's when the user is already holding a scale." A pot
@@ -419,6 +516,7 @@ export function PotLogServingScreen() {
             <View style={styles.titleLinks}>
               {editLink}
               {finishLink}
+              {dismissTodayLink}
             </View>
           </View>
           {totals.kcal > 0 && (
@@ -460,6 +558,8 @@ export function PotLogServingScreen() {
               <Text style={styles.saveText}>{settingWeight ? 'Saving…' : 'Save weight'}</Text>
             </Pressable>
           </View>
+
+          {deleteLink}
         </ScrollView>
       </KeyboardAvoidingView>
     );
@@ -478,6 +578,7 @@ export function PotLogServingScreen() {
           <View style={styles.titleLinks}>
             {editLink}
             {finishLink}
+            {dismissTodayLink}
           </View>
         </View>
         {/* Honest remaining status (task brief: "running low is a state,
@@ -679,6 +780,8 @@ export function PotLogServingScreen() {
             <Text style={styles.saveText}>{saving ? 'Logging…' : 'Log serving'}</Text>
           </Pressable>
         </View>
+
+        {deleteLink}
       </ScrollView>
     </KeyboardAvoidingView>
   );
@@ -720,6 +823,8 @@ const styles = StyleSheet.create({
   },
   titleLinks: {
     flexDirection: 'row',
+    flexWrap: 'wrap',
+    justifyContent: 'flex-end',
     gap: spacing.md,
   },
   subtitle: {
@@ -962,5 +1067,18 @@ const styles = StyleSheet.create({
   secondaryButtonText: {
     ...type.bodyStrong,
     color: colors.accent,
+  },
+  // "Delete pot" — same quiet, bottom-of-screen text-button treatment as
+  // WorkoutSessionScreen's "Delete session" (colors.textTertiary, never
+  // red: PRD §10 forbids a "danger" colour, so severity lives in the
+  // confirmation copy alone).
+  deletePotButton: {
+    marginTop: spacing.lg,
+    alignItems: 'center',
+    paddingVertical: spacing.md,
+  },
+  deletePotText: {
+    ...type.caption,
+    color: colors.textTertiary,
   },
 });

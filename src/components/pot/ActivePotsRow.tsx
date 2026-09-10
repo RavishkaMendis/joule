@@ -16,7 +16,7 @@
 // ═══════════════════════════════════════════════════════════════════════
 
 import { useCallback, useState } from 'react';
-import { Pressable, ScrollView, StyleSheet, Text, View } from 'react-native';
+import { Alert, Pressable, ScrollView, StyleSheet, Text, View } from 'react-native';
 import { useFocusEffect, useNavigation } from '@react-navigation/native';
 import type { NativeStackNavigationProp } from '@react-navigation/native-stack';
 import type { RootStackParamList } from '../../lib/navigation';
@@ -24,7 +24,7 @@ import { colors, minTouchTarget, numeric, radii, spacing, type } from '../../lib
 import { getDatabase } from '../../lib/db';
 import * as potRepo from '../../db/repositories/potRepo';
 import type { PotRow } from '../../db/types';
-import { potConfidenceSummary, potRemainingStatus } from '../../lib/potActions';
+import { dismissPotFromToday, getPotsDismissedFromToday, potConfidenceSummary, potRemainingStatus } from '../../lib/potActions';
 
 type Nav = NativeStackNavigationProp<RootStackParamList>;
 
@@ -32,10 +32,16 @@ export function ActivePotsRow() {
   const navigation = useNavigation<Nav>();
   const [pots, setPots] = useState<PotRow[]>([]);
 
+  // Task brief (the owner's own words: "I see the pot in the home page
+  // right now, which can be removed too"): active pots the user has
+  // explicitly dismissed (long-press below) never render here, even though
+  // they're still perfectly normal active pots everywhere else — see
+  // potActions.dismissPotFromToday's own doc. Filtered against ONE query
+  // for the whole row, not one per pot.
   const load = useCallback(async () => {
     const db = await getDatabase();
-    const rows = await potRepo.getActivePots(db);
-    setPots(rows);
+    const [rows, dismissed] = await Promise.all([potRepo.getActivePots(db), getPotsDismissedFromToday(db)]);
+    setPots(rows.filter((pot) => !dismissed.has(pot.id)));
   }, []);
 
   useFocusEffect(
@@ -43,6 +49,30 @@ export function ActivePotsRow() {
       void load();
     }, [load])
   );
+
+  /**
+   * Long-press to declutter Today (task brief: "removing a stale pot from
+   * Today should be quick, not a trip through three screens"). Deliberately
+   * NOT the same as finishing/deleting the pot — a plain, reversible "not
+   * here for now" that only ever affects this row. Reachable back via the
+   * "Show on Today" link on PotLogServingScreen even if this chip is never
+   * seen again to long-press.
+   */
+  const handleLongPress = (pot: PotRow) => {
+    Alert.alert(pot.name, 'Hide this pot from Today? It stays active everywhere else — Foods & Pots, and its own screen still work exactly as before.', [
+      { text: 'Cancel', style: 'cancel' },
+      {
+        text: 'Hide from Today',
+        onPress: () => {
+          void (async () => {
+            const db = await getDatabase();
+            await dismissPotFromToday(db, pot.id);
+            await load();
+          })();
+        },
+      },
+    ]);
+  };
 
   if (pots.length === 0) return null;
 
@@ -63,9 +93,10 @@ export function ActivePotsRow() {
             <Pressable
               key={pot.id}
               onPress={() => navigation.navigate('PotLogServing', { potId: pot.id })}
+              onLongPress={() => handleLongPress(pot)}
               style={({ pressed }) => [styles.chip, pressed && styles.chipPressed]}
               accessibilityRole="button"
-              accessibilityLabel={`Log a serving from ${pot.name}, ${remaining.label}${confidencePct !== null ? `, ${confidencePct}% of calories from a scanned or database match` : ''}`}
+              accessibilityLabel={`Log a serving from ${pot.name}, ${remaining.label}${confidencePct !== null ? `, ${confidencePct}% of calories from a scanned or database match` : ''}. Long-press to hide from Today.`}
             >
               <Text style={styles.chipName} numberOfLines={1}>
                 {pot.name}
