@@ -60,11 +60,19 @@ No rate limiting. Vercel serverless functions don't share memory between
 invocations, so an in-process counter would be theatre. If quota abuse ever becomes
 real, use Vercel KV or Upstash — deliberately not faked here.
 
-## Why `vercel.json` exists
+## Why `vercel.json` lives at the REPO ROOT, not here
 
-Vercel's zero-config detection did not pick up `api/gemini.js` even with the
-project's Root Directory set to `proxy` — a push produced a deployment that
-built in 289ms with no functions at all, and `/api/gemini` returned 404 where
-the previous CLI deployment had served it. `builds` + `routes` states the one
-function explicitly instead of relying on convention. There is exactly one
-function here, so nothing is lost by opting out of zero-config.
+Vercel's zero-config detection never picked up `api/gemini.js`. Two pushes
+produced byte-identical empty builds -- `Build Completed in /vercel/output
+[278ms]`, no functions -- and `/api/gemini` returned 404 where the earlier
+CLI deployment had served it.
+
+A `vercel.json` placed in this directory changed nothing, which is the
+useful datum: the git builds run from the REPO ROOT regardless of what the
+dashboard's Root Directory field displays. So the working config is
+`/vercel.json` at the repo root, declaring this function by its full path
+`proxy/api/gemini.js` and routing `/api/gemini` to it.
+
+Do not "tidy" that file down into this directory. It has been tried; the
+build silently produces nothing and the endpoint 404s, which looks exactly
+like a healthy deploy in the Vercel dashboard.
