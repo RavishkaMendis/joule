@@ -12,9 +12,9 @@ import type { AiRunResult } from '../ai/runs';
 import type { PendingEntry } from '../pendingEntry';
 import type { CaptureJob, CaptureJobInput, CaptureJobKind } from './types';
 
-/** review/submit -> processing. The only place a job is born. */
+/** review/submit -> processing. The only place a job is born. `attempts` starts at 1 — this run counts as the first. */
 export function createJob(id: string, date: string, input: CaptureJobInput, now: number): CaptureJob {
-  return { id, date, input, status: 'processing', createdAt: now, updatedAt: now };
+  return { id, date, input, status: 'processing', createdAt: now, updatedAt: now, attempts: 1 };
 }
 
 /** processing -> done, once Gemini returns a usable result. Clears any stale error from a previous failed attempt. */
@@ -41,10 +41,10 @@ export function markInterrupted(job: CaptureJob, now: number): CaptureJob {
   return markError(job, "Interrupted — the app closed before this finished analysing. Tap to retry.", now);
 }
 
-/** error -> processing, for an explicit retry. No-op from any other status. */
+/** error -> processing, for an explicit retry. Bumps `attempts` — this is the one place a retry actually happens. No-op from any other status. */
 export function toRetrying(job: CaptureJob, now: number): CaptureJob {
   if (job.status !== 'error') return job;
-  return { ...job, status: 'processing', errorMessage: undefined, updatedAt: now };
+  return { ...job, status: 'processing', errorMessage: undefined, updatedAt: now, attempts: job.attempts + 1 };
 }
 
 const KIND_LABEL: Record<CaptureJobKind, string> = {
@@ -60,15 +60,32 @@ const KIND_LABEL_LOWER: Record<CaptureJobKind, string> = {
   voice: 'voice log',
 };
 
-/** The Today pill / notification body for a job, given its current status. Pure and exhaustively tested so the copy can't silently drift from what the three screens' own inline error text used to say. */
+/** The capitalised, standalone label for a job's kind ("Photo", "Label scan", "Voice log") — used as the title of the failed-job Try again / Discard prompt (see jobPrompt.ts). */
+export function captureJobKindLabel(kind: CaptureJobKind): string {
+  return KIND_LABEL[kind];
+}
+
+/**
+ * The Today pill / notification body for a job, given its current status.
+ * Pure and exhaustively tested so the copy can't silently drift from what
+ * the three screens' own inline error text used to say.
+ *
+ * The error copy says "tap for options", not "tap to retry" — tapping a
+ * failed job used to retry it immediately (the bug this queue's dismiss
+ * flow exists to fix: see jobPrompt.ts's header), so the copy must not
+ * promise that anymore. Once `attempts` exceeds 1 the count is folded in
+ * too, so a job that keeps failing visibly says so.
+ */
 export function describeJob(job: CaptureJob): string {
   switch (job.status) {
     case 'processing':
       return `Reading your ${KIND_LABEL_LOWER[job.input.kind]}…`;
     case 'done':
       return `${KIND_LABEL[job.input.kind]} ready to confirm`;
-    case 'error':
-      return `${KIND_LABEL[job.input.kind]} failed — tap to retry`;
+    case 'error': {
+      const attemptNote = job.attempts > 1 ? ` (attempt ${job.attempts})` : '';
+      return `${KIND_LABEL[job.input.kind]} failed${attemptNote} — tap for options`;
+    }
   }
 }
 

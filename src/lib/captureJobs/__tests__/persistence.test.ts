@@ -15,6 +15,7 @@ function job(overrides: Partial<CaptureJob> = {}): CaptureJob {
     status: 'processing',
     createdAt: 1000,
     updatedAt: 1000,
+    attempts: 1,
     ...overrides,
   };
 }
@@ -81,6 +82,67 @@ describe('upsertJob / listJobs', () => {
 
     const rows = await listJobs(db);
     expect(rows.map((r) => r.id).sort()).toEqual(['job_a', 'job_b', 'job_c']);
+  });
+});
+
+describe('attempts column', () => {
+  it('round-trips a non-default attempt count', async () => {
+    const db = createTestDatabase();
+    await upsertJob(db, job({ status: 'error', errorMessage: 'timed out', attempts: 3 }));
+
+    const [row] = await listJobs(db);
+    expect(row.attempts).toBe(3);
+  });
+
+  // `attempts` was added to this table after it first shipped, and this
+  // module isn't part of the versioned src/db/migrations.ts system (see
+  // persistence.ts's header) — so an install that already created the
+  // table without this column must still work: `ensureTable`'s defensive
+  // `ALTER TABLE ... ADD COLUMN` has to run against a table that already
+  // exists, not just a freshly-created one.
+  it('back-fills attempts to 1 for a table that predates the column', async () => {
+    const db = createTestDatabase();
+    // Simulate a pre-existing install: create the table with the OLD
+    // column set, before this test even calls into persistence.ts.
+    await db.execAsync(`
+      CREATE TABLE app_capture_jobs (
+        id            TEXT PRIMARY KEY,
+        date          TEXT NOT NULL,
+        status        TEXT NOT NULL,
+        input_json    TEXT NOT NULL,
+        entries_json  TEXT,
+        error_message TEXT,
+        created_at    INTEGER NOT NULL,
+        updated_at    INTEGER NOT NULL
+      );
+    `);
+    await db.runAsync(
+      `INSERT INTO app_capture_jobs (id, date, status, input_json, entries_json, error_message, created_at, updated_at)
+       VALUES ('stale_job', '2026-09-03', 'error', '{"kind":"meal_photo","photoUri":"file:///old.jpg"}', NULL, 'Interrupted', 1, 1)`
+    );
+
+    const rows = await listJobs(db);
+    expect(rows).toHaveLength(1);
+    expect(rows[0].attempts).toBe(1);
+
+    // And the column keeps working normally for new writes after that.
+    await upsertJob(db, job({ id: 'stale_job', status: 'error', errorMessage: 'Interrupted', attempts: 5 }));
+    const [updated] = await listJobs(db);
+    expect(updated.attempts).toBe(5);
+  });
+
+  // Once a process HAS run the ALTER above, a later process against that
+  // same on-device database must not crash on "duplicate column name" —
+  // `ensureTable`'s in-memory `ensuredTable` flag only guards re-running
+  // it within one process's lifetime, not across restarts.
+  it('tolerates the column already existing from an earlier run (a later app launch against the same db)', async () => {
+    const db = createTestDatabase();
+    await upsertJob(db, job({ id: 'job_a' })); // first "process": creates the table and adds the column
+    resetCaptureJobsPersistenceForTesting(); // simulate a fresh process (in-memory ensuredTable flag forgotten) against the SAME db, which already has the column
+
+    await expect(upsertJob(db, job({ id: 'job_b' }))).resolves.not.toThrow();
+    const rows = await listJobs(db);
+    expect(rows.map((r) => r.id).sort()).toEqual(['job_a', 'job_b']);
   });
 });
 

@@ -191,6 +191,32 @@ describe('dismissJob', () => {
     expect(getJob(job.id)).toBeUndefined();
     expect(mockNotifyJobSettled).not.toHaveBeenCalled();
   });
+
+  // The bug this task fixes: a failed job had no dismiss path at all, so
+  // it survived every restart forever. Confirms the fix actually reaches
+  // disk — a plain in-memory delete wouldn't be enough, since
+  // `initCaptureJobsRuntime` rehydrates straight from `app_capture_jobs`
+  // on every launch (see store.ts's `hydrate`).
+  it('a dismissed failed job stays gone after a simulated app restart (rehydrate from persistence)', async () => {
+    mockExecuteCaptureJob.mockResolvedValue({ ok: false, reason: 'network', detail: 'timeout' });
+    const job = submitJob(db, '2026-09-05', MEAL_PHOTO_INPUT);
+    await flush();
+    expect(getJob(job.id)?.status).toBe('error');
+
+    dismissJob(db, job.id);
+    await flush();
+
+    // Simulate an app kill + relaunch: a brand new in-memory store, but
+    // the SAME on-disk db — exactly what a real restart preserves.
+    resetCaptureJobsStoreForTesting();
+    const unsubscribe = initCaptureJobsRuntime(db, jest.fn());
+    await flush();
+
+    expect(getJob(job.id)).toBeUndefined();
+    expect(getSnapshot().map((j) => j.id)).not.toContain(job.id);
+    expect(await listJobs(db)).toEqual([]);
+    unsubscribe();
+  });
 });
 
 describe('retryJob', () => {
@@ -228,6 +254,7 @@ describe('initCaptureJobsRuntime — surviving an app kill mid-flight', () => {
       status: 'processing',
       createdAt: 1,
       updatedAt: 1,
+      attempts: 1,
     });
 
     const unsubscribe = initCaptureJobsRuntime(db, jest.fn());
@@ -250,6 +277,7 @@ describe('initCaptureJobsRuntime — surviving an app kill mid-flight', () => {
       entries: [],
       createdAt: 1,
       updatedAt: 1,
+      attempts: 1,
     });
 
     const unsubscribe = initCaptureJobsRuntime(db, jest.fn());
@@ -269,6 +297,7 @@ describe('initCaptureJobsRuntime — surviving an app kill mid-flight', () => {
       entries: [],
       createdAt: 1,
       updatedAt: 1,
+      attempts: 1,
     });
     mockGetColdStartCaptureJobId.mockReturnValue('tapped_job');
 

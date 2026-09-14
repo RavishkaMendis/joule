@@ -13,6 +13,7 @@
 // caller, and it doesn't care which underlying path ran.
 // ═══════════════════════════════════════════════════════════════════════
 
+import { File } from 'expo-file-system';
 import { readFileAsBase64 } from '../ai/media';
 import { runLabelOcr, runMealPhoto, runVoiceParse, type AiRunResult } from '../ai/runs';
 import type { CaptureJobInput } from './types';
@@ -21,6 +22,41 @@ import type { CaptureJobInput } from './types';
 async function resolveBase64(uri: string, provided?: string): Promise<string> {
   if (provided) return provided;
   return readFileAsBase64(uri);
+}
+
+/**
+ * The one file `executeCaptureJob` cannot proceed without for a given
+ * input — the meal-photo/label-OCR photo, or the voice recording. NOT a
+ * meal photo's optional `voiceNoteUri`: a missing voice note never fails
+ * the job (see the try/catch below), so its absence must never make an
+ * otherwise-retriable job look unretriable.
+ */
+function requiredSourceUri(input: CaptureJobInput): string {
+  switch (input.kind) {
+    case 'meal_photo':
+    case 'label_ocr':
+      return input.photoUri;
+    case 'voice':
+      return input.audioUri;
+  }
+}
+
+/**
+ * Whether a retry of this job could even attempt to re-read its source
+ * bytes — checked BEFORE offering "Try again" on a failed job (see
+ * CaptureJobsIndicator.tsx / jobPrompt.ts). types.ts's header documents
+ * why this matters: `*Base64` payloads are deliberately not persisted, so
+ * after a restart a retry can only work "as long as the OS hasn't cleared
+ * that cache file" — a two-day-old camera cache file usually hasn't
+ * survived. Without this check the app was offering, and automatically
+ * performing, a retry that was guaranteed to fail.
+ *
+ * Synchronous — `expo-file-system`'s new `File#exists` is a plain getter,
+ * no I/O await needed (see ../ai/media.ts's header for why this app uses
+ * that API rather than the legacy `readAsStringAsync`-style one).
+ */
+export function captureJobSourceExists(input: CaptureJobInput): boolean {
+  return new File(requiredSourceUri(input)).exists;
 }
 
 export async function executeCaptureJob(input: CaptureJobInput): Promise<AiRunResult> {

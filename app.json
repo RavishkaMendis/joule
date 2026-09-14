@@ -11,7 +11,8 @@
       "bundleIdentifier": "com.rav.joule",
       "infoPlist": {
         "ITSAppUsesNonExemptEncryption": false
-      }
+      },
+      "buildNumber": "3"
     },
     "android": {
       "package": "com.rav.joule",

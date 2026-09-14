@@ -20,7 +20,8 @@ jest.mock('../../ai/runs', () => ({
   runVoiceParse: (...args: unknown[]) => mockRunVoiceParse(...args),
 }));
 
-import { executeCaptureJob } from '../runner';
+import { File, Paths } from 'expo-file-system';
+import { captureJobSourceExists, executeCaptureJob } from '../runner';
 
 const OK_RESULT = { ok: true, entries: [], rejectedCount: 0 };
 
@@ -124,5 +125,77 @@ describe('voice', () => {
 
     expect(mockReadFileAsBase64).toHaveBeenCalledWith('file:///note.m4a');
     expect(mockRunVoiceParse).toHaveBeenCalledWith('REREAD_AUDIO', 'audio/m4a');
+  });
+});
+
+// ═══════════════════════════════════════════════════════════════════════
+// captureJobSourceExists — the "is a retry even possible" check that
+// CaptureJobsIndicator.tsx runs before offering "Try again" on a failed
+// job. Uses the REAL `expo-file-system` File/Directory classes against
+// real temp files (same approach as
+// src/lib/backup/__tests__/autoBackup.test.ts) rather than mocking the
+// module — `File#exists` is exactly the thing under test, so a mock
+// would just assert against itself.
+// ═══════════════════════════════════════════════════════════════════════
+describe('captureJobSourceExists', () => {
+  const scratchDir = Paths.cache;
+
+  function writeTempFile(name: string): string {
+    const file = new File(scratchDir, name);
+    file.write('x');
+    return file.uri;
+  }
+
+  function missingFileUri(name: string): string {
+    return new File(scratchDir, name).uri;
+  }
+
+  it('is true for a meal_photo job whose photo file is still on disk', () => {
+    const photoUri = writeTempFile(`capture-job-test-${Date.now()}-a.jpg`);
+    try {
+      expect(captureJobSourceExists({ kind: 'meal_photo', photoUri })).toBe(true);
+    } finally {
+      new File(photoUri).delete();
+    }
+  });
+
+  it('is false for a meal_photo job whose photo file is gone (the two-day-old-cache-file case)', () => {
+    const photoUri = missingFileUri(`capture-job-test-${Date.now()}-missing.jpg`);
+    expect(captureJobSourceExists({ kind: 'meal_photo', photoUri })).toBe(false);
+  });
+
+  it('ignores a missing voiceNoteUri on a meal_photo job — only the photo is required to retry', () => {
+    const photoUri = writeTempFile(`capture-job-test-${Date.now()}-b.jpg`);
+    try {
+      expect(
+        captureJobSourceExists({
+          kind: 'meal_photo',
+          photoUri,
+          voiceNoteUri: missingFileUri(`capture-job-test-${Date.now()}-note.m4a`),
+        })
+      ).toBe(true);
+    } finally {
+      new File(photoUri).delete();
+    }
+  });
+
+  it('is true for a label_ocr job whose photo file is still on disk, false once it is gone', () => {
+    const photoUri = writeTempFile(`capture-job-test-${Date.now()}-c.jpg`);
+    try {
+      expect(captureJobSourceExists({ kind: 'label_ocr', photoUri })).toBe(true);
+    } finally {
+      new File(photoUri).delete();
+    }
+    expect(captureJobSourceExists({ kind: 'label_ocr', photoUri })).toBe(false);
+  });
+
+  it('is true for a voice job whose audio file is still on disk, false once it is gone', () => {
+    const audioUri = writeTempFile(`capture-job-test-${Date.now()}-d.m4a`);
+    try {
+      expect(captureJobSourceExists({ kind: 'voice', audioUri, mimeType: 'audio/m4a' })).toBe(true);
+    } finally {
+      new File(audioUri).delete();
+    }
+    expect(captureJobSourceExists({ kind: 'voice', audioUri, mimeType: 'audio/m4a' })).toBe(false);
   });
 });

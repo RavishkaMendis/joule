@@ -38,9 +38,21 @@ CREATE TABLE IF NOT EXISTS app_capture_jobs (
   entries_json  TEXT,
   error_message TEXT,
   created_at    INTEGER NOT NULL,
-  updated_at    INTEGER NOT NULL
+  updated_at    INTEGER NOT NULL,
+  attempts      INTEGER NOT NULL DEFAULT 1
 );
 `;
+
+// `attempts` (task brief: "show an attempt count once it exceeds one")
+// was added after this table first shipped, and this module isn't part
+// of the versioned src/db/migrations.ts system (see the file header —
+// src/db is off-limits here) — so an install that already created the
+// table above without this column needs its own additive step, same
+// "ALTER TABLE ... ADD COLUMN" idiom src/db/schema.ts uses elsewhere,
+// with SQLite's DEFAULT back-filling every existing row to 1. Run
+// unconditionally on every fresh process; the duplicate-column error on
+// an install that already has it is expected and swallowed.
+const ADD_ATTEMPTS_COLUMN_SQL = `ALTER TABLE app_capture_jobs ADD COLUMN attempts INTEGER NOT NULL DEFAULT 1;`;
 
 type JobRow = {
   id: string;
@@ -51,6 +63,7 @@ type JobRow = {
   error_message: string | null;
   created_at: number;
   updated_at: number;
+  attempts: number;
 };
 
 function rowToJob(row: JobRow): CaptureJob {
@@ -63,14 +76,33 @@ function rowToJob(row: JobRow): CaptureJob {
     errorMessage: row.error_message ?? undefined,
     createdAt: row.created_at,
     updatedAt: row.updated_at,
+    attempts: row.attempts,
   };
 }
 
 let ensuredTable = false;
 
+/**
+ * True for "this column already exists" — deliberately NOT an
+ * `err instanceof Error` check: `node:sqlite` (used by the test harness,
+ * testDb.ts) throws errors from a different realm than Jest's per-test
+ * globals, so a perfectly real `Error` with a `.message` and
+ * `constructor.name === 'Error'` still fails `instanceof Error` there.
+ * Duck-typing the `.message` string works identically for that and for
+ * the real on-device `expo-sqlite` error shape.
+ */
+function isDuplicateColumnError(err: unknown): boolean {
+  return typeof err === 'object' && err !== null && 'message' in err && /duplicate column/i.test(String((err as { message: unknown }).message));
+}
+
 async function ensureTable(db: Database): Promise<void> {
   if (ensuredTable) return;
   await db.execAsync(ENSURE_TABLE_SQL);
+  try {
+    await db.execAsync(ADD_ATTEMPTS_COLUMN_SQL);
+  } catch (err) {
+    if (!isDuplicateColumnError(err)) throw err;
+  }
   ensuredTable = true;
 }
 
@@ -85,8 +117,8 @@ export async function listJobs(db: Database): Promise<CaptureJob[]> {
 export async function upsertJob(db: Database, job: CaptureJob): Promise<void> {
   await ensureTable(db);
   await db.runAsync(
-    `INSERT INTO app_capture_jobs (id, date, status, input_json, entries_json, error_message, created_at, updated_at)
-     VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+    `INSERT INTO app_capture_jobs (id, date, status, input_json, entries_json, error_message, created_at, updated_at, attempts)
+     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
      ON CONFLICT(id) DO UPDATE SET
        date = excluded.date,
        status = excluded.status,
@@ -94,7 +126,8 @@ export async function upsertJob(db: Database, job: CaptureJob): Promise<void> {
        entries_json = excluded.entries_json,
        error_message = excluded.error_message,
        created_at = excluded.created_at,
-       updated_at = excluded.updated_at`,
+       updated_at = excluded.updated_at,
+       attempts = excluded.attempts`,
     [
       job.id,
       job.date,
@@ -104,6 +137,7 @@ export async function upsertJob(db: Database, job: CaptureJob): Promise<void> {
       job.errorMessage ?? null,
       job.createdAt,
       job.updatedAt,
+      job.attempts,
     ]
   );
 }

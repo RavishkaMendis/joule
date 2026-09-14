@@ -29,3 +29,21 @@ export async function logWeight(
   await weightRepo.upsertWeight(db, { date, weight_kg: weightKg, confounder, source: 'manual' });
   await reconcileAfterWeightLogged(db, date);
 }
+
+/**
+ * Display text + accessibility label for the permanent weight control on
+ * Today (StatusBlock) — one number, formatted consistently with the rest
+ * of the app's `numeric` figures, or a neutral (never guilt-toned)
+ * invitation when nothing is logged yet for the day being shown. Kept as
+ * a pure function, same reasoning as `computeMacroProgress`: the "what to
+ * show" decision is trivial to get subtly wrong (e.g. reading a missing
+ * weight as "0 kg") and cheap to unit test in isolation from any
+ * rendering.
+ */
+export function formatWeightRow(weightKg: number | null): { value: string; a11yLabel: string } {
+  if (weightKg === null) {
+    return { value: 'Not logged', a11yLabel: 'Weight not logged. Tap to log.' };
+  }
+  const value = `${weightKg} kg`;
+  return { value, a11yLabel: `Weight ${value}. Tap to update.` };
+}

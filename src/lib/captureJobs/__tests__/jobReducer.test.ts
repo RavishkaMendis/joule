@@ -1,4 +1,5 @@
 import {
+  captureJobKindLabel,
   createJob,
   describeAiFailure,
   describeJob,
@@ -20,7 +21,7 @@ const ENTRIES: PendingEntry[] = [
 ];
 
 describe('createJob', () => {
-  it('starts a fresh job in processing with matching created/updated timestamps', () => {
+  it('starts a fresh job in processing with matching created/updated timestamps, on its first attempt', () => {
     const job = createJob('job_1', '2026-09-05', MEAL_PHOTO_INPUT, 1000);
     expect(job).toEqual({
       id: 'job_1',
@@ -29,6 +30,7 @@ describe('createJob', () => {
       status: 'processing',
       createdAt: 1000,
       updatedAt: 1000,
+      attempts: 1,
     });
   });
 });
@@ -78,12 +80,21 @@ describe('markInterrupted', () => {
 });
 
 describe('toRetrying', () => {
-  it('moves an error job back to processing and clears the message', () => {
+  it('moves an error job back to processing, clears the message, and bumps the attempt count', () => {
     const job = createJob('job_1', '2026-09-05', MEAL_PHOTO_INPUT, 1000);
     const errored = markError(job, 'network blip', 1500);
     const retrying = toRetrying(errored, 2000);
     expect(retrying.status).toBe('processing');
     expect(retrying.errorMessage).toBeUndefined();
+    expect(retrying.attempts).toBe(2);
+  });
+
+  it('bumps the attempt count again on a second retry, so a repeatedly-failing job keeps an accurate count', () => {
+    const job = createJob('job_1', '2026-09-05', MEAL_PHOTO_INPUT, 1000);
+    const firstRetry = toRetrying(markError(job, 'network blip', 1500), 2000);
+    const secondErrored = markError(firstRetry, 'timed out again', 2500);
+    const secondRetry = toRetrying(secondErrored, 3000);
+    expect(secondRetry.attempts).toBe(3);
   });
 
   it('is a no-op from any status other than error', () => {
@@ -109,6 +120,35 @@ describe('describeJob', () => {
     if (status === 'done') job = markDone(job, ENTRIES, 1500);
     if (status === 'error') job = markError(job, 'boom', 1500);
     expect(describeJob(job)).toMatch(expected);
+  });
+
+  // A tap on a failed job used to retry it immediately (the bug this
+  // whole prompt flow exists to fix — see jobPrompt.ts's header) — the
+  // copy must not keep promising that.
+  it('never tells the user a tap on a failed job will retry it', () => {
+    const errored = markError(createJob('job_1', '2026-09-05', MEAL_PHOTO_INPUT, 1000), 'boom', 1500);
+    expect(describeJob(errored)).not.toMatch(/tap to retry/i);
+  });
+
+  it('omits the attempt count on the first failure', () => {
+    const errored = markError(createJob('job_1', '2026-09-05', MEAL_PHOTO_INPUT, 1000), 'boom', 1500);
+    expect(describeJob(errored)).not.toMatch(/attempt/i);
+  });
+
+  it('shows the attempt count once a job has failed more than once', () => {
+    const job = createJob('job_1', '2026-09-05', MEAL_PHOTO_INPUT, 1000);
+    const firstError = markError(job, 'boom', 1500);
+    const retried = toRetrying(firstError, 2000);
+    const secondError = markError(retried, 'boom again', 2500);
+    expect(describeJob(secondError)).toMatch(/attempt 2/i);
+  });
+});
+
+describe('captureJobKindLabel', () => {
+  it('gives a distinct, capitalised label per kind', () => {
+    expect(captureJobKindLabel('meal_photo')).toBe('Photo');
+    expect(captureJobKindLabel('label_ocr')).toBe('Label scan');
+    expect(captureJobKindLabel('voice')).toBe('Voice log');
   });
 });
 

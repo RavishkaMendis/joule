@@ -75,4 +75,12 @@ export type CaptureJob = {
   entries?: PendingEntry[];
   /** Set on `status === 'error'` — the real failure reason, never a generic "something went wrong" (task brief: "the real error, never silently vanishing"). */
   errorMessage?: string;
+  /**
+   * How many times this job has been run, including the current/most
+   * recent run — starts at 1 (`createJob`), bumped by every explicit
+   * retry (`toRetrying`). Surfaced on the failed-job prompt once it
+   * exceeds 1, so a job that keeps failing visibly says so rather than
+   * looking like a fresh failure on every tap.
+   */
+  attempts: number;
 };

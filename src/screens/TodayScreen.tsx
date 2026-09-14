@@ -3,7 +3,12 @@
 //
 // Layout order follows the PRD's spec nearly verbatim:
 //   1. Date header (task addition: previous/next + calendar picker)
-//   2. Status block (headline kcal, remaining, PCF, TDEE+trend)
+//   2. Status block (headline kcal, remaining, PCF, TDEE+trend, and a
+//      permanent "Weight" row — task addition: the only route into
+//      WeightEntryScreen used to be the prompt below, which only shows
+//      up once a day and disappears the moment something is logged. The
+//      row in StatusBlock is the second, always-there door: same
+//      selectedDate, works for both adding and correcting a reading.)
 //   3. Weight prompt (only if no reading logged yet for the SELECTED day, PRD §9.6)
 //   4. Quick-add chips (PRD §9.1's "highest value-per-line-of-code")
 //   5. Entry list (selected day's items, tap to edit, swipe to delete)
@@ -103,7 +108,12 @@ export function TodayScreen() {
   const jobs = useCaptureJobsList();
   const [entries, setEntries] = useState<FoodEntryRow[]>([]);
   const [quickAdd, setQuickAdd] = useState<SavedFoodRow[]>([]);
-  const [hasWeightForSelectedDate, setHasWeightForSelectedDate] = useState(false);
+  // The full reading (not just a boolean) so StatusBlock's permanent
+  // weight control can display the actual figure, not merely whether one
+  // exists. `hasWeightForSelectedDate` stays derived from this rather
+  // than tracked separately, so the two can never disagree.
+  const [selectedDateWeightKg, setSelectedDateWeightKg] = useState<number | null>(null);
+  const hasWeightForSelectedDate = selectedDateWeightKg !== null;
   const [refreshing, setRefreshing] = useState(false);
   const [menuOpen, setMenuOpen] = useState(false);
   const today = todayLocalISO();
@@ -200,7 +210,7 @@ export function TodayScreen() {
     ]);
     setEntries(dayEntries);
     setQuickAdd(candidates);
-    setHasWeightForSelectedDate(weightForDay !== null);
+    setSelectedDateWeightKg(weightForDay?.weight_kg ?? null);
   }, [selectedDate]);
 
   useEffect(() => {
@@ -402,7 +412,13 @@ export function TodayScreen() {
             and the weight prompt sits close beneath it (tightSpacer) since
             it's a related same-group nudge, not a new section. */}
         <View style={styles.sectionSpacer} />
-        <StatusBlock totals={totals} targets={engine.targets} tdee={engine.tdee} />
+        <StatusBlock
+          totals={totals}
+          targets={engine.targets}
+          tdee={engine.tdee}
+          weightKg={selectedDateWeightKg}
+          onLogWeight={() => navigation.navigate('WeightEntry', { date: selectedDate })}
+        />
 
         {nextAction === 'weight' && (
           <>

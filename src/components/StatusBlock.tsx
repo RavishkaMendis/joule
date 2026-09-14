@@ -24,13 +24,25 @@
 // "P 33 / —" — never a bar stuck at 0% or 100%, which would misread as
 // "failing" or "done" against a target that does not exist (PRD §10: a
 // missing target is data-neutral, not a failure state).
+//
+// Weight row (task: "the owner can only log his weight when the app
+// decides to offer it" — WeightPrompt only appears when nothing is
+// logged yet for the selected day, and only until it is). This row is
+// the permanent second door: always rendered regardless of whether a
+// reading exists, so a past reading can always be corrected too (PRD
+// §10 "everything editable forever"). It shares the bottom bordered
+// section with the TDEE/trend line rather than opening a new one, since
+// both read off the same weight_log history and existing spacing tokens
+// (spacing.lg/md/sm, the hairline border) are reused as-is rather than
+// introducing new values.
 // ═══════════════════════════════════════════════════════════════════════
 
-import { Text, View, StyleSheet } from 'react-native';
-import { colors, numeric, spacing, type } from '../lib/theme';
+import { Pressable, Text, View, StyleSheet } from 'react-native';
+import { colors, minTouchTarget, numeric, spacing, type } from '../lib/theme';
 import type { TDEEResult } from '../engine/types';
 import type { StoredTargets } from '../lib/targetsStore';
 import { computeMacroProgress } from '../lib/macroProgress';
+import { formatWeightRow } from '../lib/weightEntryActions';
 
 type MacroTotals = {
   kcal: number;
@@ -43,6 +55,10 @@ type Props = {
   totals: MacroTotals;
   targets: StoredTargets | null;
   tdee: TDEEResult | null;
+  /** The selected day's reading, or null if none is logged yet. Never imputed. */
+  weightKg: number | null;
+  /** Opens WeightEntryScreen for whichever date this block is showing. */
+  onLogWeight: () => void;
 };
 
 function round(n: number): number {
@@ -56,9 +72,10 @@ function tdeeQualityLabel(quality: TDEEResult['dataQuality']): string | null {
   return null;
 }
 
-export function StatusBlock({ totals, targets, tdee }: Props) {
+export function StatusBlock({ totals, targets, tdee, weightKg, onLogWeight }: Props) {
   const targetKcal = targets?.targetKcal ?? null;
   const remaining = targetKcal !== null ? targetKcal - totals.kcal : null;
+  const weightRow = formatWeightRow(weightKg);
 
   return (
     <View style={styles.container}>
@@ -90,19 +107,41 @@ export function StatusBlock({ totals, targets, tdee }: Props) {
         </View>
       </View>
 
-      {tdee && (
-        <View style={styles.tdeeRow}>
-          <Text style={styles.tdeeText}>
-            TDEE {round(tdee.tdee).toLocaleString()} ±{round((tdee.confidenceHigh - tdee.confidenceLow) / 2)}
-            <Text style={styles.tdeeSeparator}>    ·    </Text>
-            trend {tdee.trendKgPerWeek >= 0 ? '+' : '−'}
-            {Math.abs(tdee.trendKgPerWeek).toFixed(2)} kg/wk
-          </Text>
-          {tdeeQualityLabel(tdee.dataQuality) && (
-            <Text style={styles.tdeeQuality}>{tdeeQualityLabel(tdee.dataQuality)}</Text>
-          )}
-        </View>
-      )}
+      {/* Permanent second door to WeightEntryScreen (task: "the owner can
+          only log his weight when the app decides to offer it") — always
+          rendered, independent of WeightPrompt above and of whether `tdee`
+          has anything to show, so a reading for the selected day can
+          always be added or corrected in one tap. Shares this bordered
+          section with the TDEE row below rather than adding a second
+          hairline border. */}
+      <View style={styles.bottomSection}>
+        <Pressable
+          onPress={onLogWeight}
+          style={({ pressed }) => [styles.weightRow, pressed && styles.weightRowPressed]}
+          accessibilityRole="button"
+          accessibilityLabel={weightRow.a11yLabel}
+        >
+          <Text style={styles.weightLabel}>Weight</Text>
+          <View style={styles.weightValueRow}>
+            <Text style={[styles.weightValue, weightKg === null && styles.weightValueEmpty]}>{weightRow.value}</Text>
+            <Text style={styles.weightChevron}>{'>'}</Text>
+          </View>
+        </Pressable>
+
+        {tdee && (
+          <View style={styles.tdeeRow}>
+            <Text style={styles.tdeeText}>
+              TDEE {round(tdee.tdee).toLocaleString()} ±{round((tdee.confidenceHigh - tdee.confidenceLow) / 2)}
+              <Text style={styles.tdeeSeparator}>    ·    </Text>
+              trend {tdee.trendKgPerWeek >= 0 ? '+' : '−'}
+              {Math.abs(tdee.trendKgPerWeek).toFixed(2)} kg/wk
+            </Text>
+            {tdeeQualityLabel(tdee.dataQuality) && (
+              <Text style={styles.tdeeQuality}>{tdeeQualityLabel(tdee.dataQuality)}</Text>
+            )}
+          </View>
+        )}
+      </View>
     </View>
   );
 }
@@ -249,11 +288,49 @@ const styles = StyleSheet.create({
     borderRadius: 1.5,
     backgroundColor: colors.textTertiary,
   },
-  tdeeRow: {
+  // Wraps the permanent weight row and (when present) the TDEE row —
+  // this is the section's one hairline border/marginTop, reusing the
+  // exact values the TDEE row used to carry on its own so the section
+  // reads identically whether or not `tdee` has anything to show.
+  bottomSection: {
     marginTop: spacing.lg,
     paddingTop: spacing.md,
     borderTopWidth: StyleSheet.hairlineWidth,
     borderTopColor: colors.border,
+  },
+  weightRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'space-between',
+    minHeight: minTouchTarget,
+  },
+  weightRowPressed: {
+    opacity: 0.6,
+  },
+  weightLabel: {
+    ...type.caption,
+    color: colors.textSecondary,
+  },
+  weightValueRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: spacing.xs,
+  },
+  weightValue: {
+    ...type.caption,
+    ...numeric,
+    color: colors.text,
+  },
+  // Not a failure state (PRD §10) — same tone family as the "no target
+  // yet" hint above, never red/dimmed-as-warning.
+  weightValueEmpty: {
+    color: colors.textTertiary,
+  },
+  weightChevron: {
+    color: colors.textTertiary,
+  },
+  tdeeRow: {
+    marginTop: spacing.sm,
   },
   tdeeText: {
     ...type.caption,
