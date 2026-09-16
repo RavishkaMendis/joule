@@ -50,17 +50,15 @@ export function toRetrying(job: CaptureJob, now: number): CaptureJob {
 const KIND_LABEL: Record<CaptureJobKind, string> = {
   meal_photo: 'Photo',
   label_ocr: 'Label scan',
-  voice: 'Voice log',
 };
 
 /** Lower-case variant for mid-sentence use ("reading your photo…"). */
 const KIND_LABEL_LOWER: Record<CaptureJobKind, string> = {
   meal_photo: 'photo',
   label_ocr: 'label scan',
-  voice: 'voice log',
 };
 
-/** The capitalised, standalone label for a job's kind ("Photo", "Label scan", "Voice log") — used as the title of the failed-job Try again / Discard prompt (see jobPrompt.ts). */
+/** The capitalised, standalone label for a job's kind ("Photo", "Label scan") — used as the title of the failed-job Try again / Discard prompt (see jobPrompt.ts). */
 export function captureJobKindLabel(kind: CaptureJobKind): string {
   return KIND_LABEL[kind];
 }
@@ -105,9 +103,6 @@ export function describeAiFailure(kind: CaptureJobKind, result: Extract<AiRunRes
     case 'no_items':
       if (kind === 'label_ocr') {
         return "Couldn't read a plausible nutrition panel from that photo. Try a clearer, well-lit shot of the per-100g column, or enter it manually.";
-      }
-      if (kind === 'voice') {
-        return "Couldn't make out any food from that recording. Try again, speaking clearly.";
       }
       return "Couldn't identify any food in that photo. Try a clearer shot, add a note describing it, or enter manually.";
     case 'parse_failed':

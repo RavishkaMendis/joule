@@ -3,7 +3,6 @@ import { describeFailedJobPrompt, jobTapAction } from '../jobPrompt';
 import type { CaptureJobInput } from '../types';
 
 const MEAL_PHOTO_INPUT: CaptureJobInput = { kind: 'meal_photo', photoUri: 'file:///photo.jpg', photoBase64: 'AAAA' };
-const VOICE_INPUT: CaptureJobInput = { kind: 'voice', audioUri: 'file:///note.m4a', mimeType: 'audio/m4a' };
 
 describe('jobTapAction', () => {
   // The bug this whole file exists to fix: a tap on a failed job used to
@@ -61,12 +60,6 @@ describe('describeFailedJobPrompt', () => {
     expect(prompt.canRetry).toBe(false);
     expect(prompt.message).toMatch(/no longer on this device/i);
     expect(prompt.message).toMatch(/can't be retried/i);
-  });
-
-  it('calls it a "recording" rather than a "photo" for a voice job', () => {
-    const job = markError(createJob('job_1', '2026-09-05', VOICE_INPUT, 1000), 'gone', 1500);
-    const prompt = describeFailedJobPrompt(job, false);
-    expect(prompt.message).toMatch(/recording is no longer on this device/i);
   });
 
   it('omits any attempt count on the first failure', () => {

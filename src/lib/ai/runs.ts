@@ -15,7 +15,7 @@ import type { PendingEntry } from '../pendingEntry';
 import { hasGeminiApiKey } from './apiKey';
 import { callGeminiStructured, GEMINI_MODELS, type InlineMediaPart } from './geminiClient';
 import { applyUserQuantityOverrides, mapGeminiResponseToPendingEntries, type UserQuantityOverride } from './mapToPendingEntry';
-import { buildLabelOcrPrompt, buildMealPhotoPrompt, buildPotIngredientsPrompt, buildVoicePrompt } from './prompts';
+import { buildLabelOcrPrompt, buildMealPhotoPrompt, buildPotIngredientsPrompt } from './prompts';
 
 export type AiRunResult =
   | { ok: true; entries: PendingEntry[]; rejectedCount: number }
@@ -85,22 +85,6 @@ export async function runMealPhoto(
   );
 
   return finishRun(result, 'meal_photo', options?.userQuantities);
-}
-
-/**
- * PRD §7.1 voice, the primary input: raw recorded audio straight to
- * Gemini, no speech-to-text step. `mimeType` should match the recorder's
- * output container (expo-audio's HIGH_QUALITY preset produces .m4a →
- * 'audio/mp4' or 'audio/m4a' depending on platform; callers pass through
- * whatever the recording actually is).
- */
-export async function runVoiceParse(audioBase64: string, mimeType = 'audio/m4a'): Promise<AiRunResult> {
-  if (!hasGeminiApiKey()) return { ok: false, reason: 'missing_key' };
-
-  const media: InlineMediaPart = { mimeType, base64Data: audioBase64 };
-  const result = await callGeminiStructured(GEMINI_MODELS.voice, buildVoicePrompt(), media);
-
-  return finishRun(result, 'voice');
 }
 
 /**

@@ -14,7 +14,6 @@ import type { AiRunResult } from '../../ai/runs';
 
 const MEAL_PHOTO_INPUT: CaptureJobInput = { kind: 'meal_photo', photoUri: 'file:///photo.jpg', photoBase64: 'AAAA' };
 const LABEL_INPUT: CaptureJobInput = { kind: 'label_ocr', photoUri: 'file:///label.jpg', photoBase64: 'BBBB' };
-const VOICE_INPUT: CaptureJobInput = { kind: 'voice', audioUri: 'file:///note.m4a', mimeType: 'audio/m4a' };
 
 const ENTRIES: PendingEntry[] = [
   { name: 'Rice', grams: 150, kcal: 200, protein_g: 4, carbs_g: 44, fat_g: 0.5, confidence: 'medium', source: 'meal_photo' },
@@ -110,12 +109,10 @@ describe('describeJob', () => {
   it.each([
     ['meal_photo' as const, 'processing' as const, /photo/i],
     ['label_ocr' as const, 'processing' as const, /label scan/i],
-    ['voice' as const, 'processing' as const, /voice log/i],
     ['meal_photo' as const, 'done' as const, /photo.*ready to confirm/i],
     ['label_ocr' as const, 'error' as const, /label scan.*failed/i],
   ])('describes a %s job in status %s', (kind, status, expected) => {
-    const input: CaptureJobInput =
-      kind === 'meal_photo' ? MEAL_PHOTO_INPUT : kind === 'label_ocr' ? LABEL_INPUT : VOICE_INPUT;
+    const input: CaptureJobInput = kind === 'meal_photo' ? MEAL_PHOTO_INPUT : LABEL_INPUT;
     let job = createJob('job_1', '2026-09-05', input, 1000);
     if (status === 'done') job = markDone(job, ENTRIES, 1500);
     if (status === 'error') job = markError(job, 'boom', 1500);
@@ -148,7 +145,6 @@ describe('captureJobKindLabel', () => {
   it('gives a distinct, capitalised label per kind', () => {
     expect(captureJobKindLabel('meal_photo')).toBe('Photo');
     expect(captureJobKindLabel('label_ocr')).toBe('Label scan');
-    expect(captureJobKindLabel('voice')).toBe('Voice log');
   });
 });
 
@@ -171,16 +167,12 @@ describe('describeAiFailure', () => {
     expect(describeAiFailure('label_ocr', failure('no_items'))).toMatch(/nutrition panel/i);
   });
 
-  it('gives a voice-specific no_items message for voice', () => {
-    expect(describeAiFailure('voice', failure('no_items'))).toMatch(/make out any food/i);
-  });
-
   it('surfaces the real network detail rather than a generic message', () => {
     expect(describeAiFailure('label_ocr', failure('network', 'HTTP 503: overloaded'))).toContain('HTTP 503: overloaded');
   });
 
   it('gives the parse_failed message', () => {
-    expect(describeAiFailure('voice', failure('parse_failed'))).toMatch(/couldn't be understood/i);
+    expect(describeAiFailure('meal_photo', failure('parse_failed'))).toMatch(/couldn't be understood/i);
   });
 
   it('gives a distinct token-specific message for proxy_unauthorized, never the generic network copy', () => {

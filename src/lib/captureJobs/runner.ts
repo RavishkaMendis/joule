@@ -9,13 +9,15 @@
 //
 // Takes a `CaptureJobInput` (see types.ts) and produces the same
 // `AiRunResult` the screens used to get directly from `runMealPhoto` /
-// `runLabelOcr` / `runVoiceParse` — the store (store.ts) is the only
-// caller, and it doesn't care which underlying path ran.
+// `runLabelOcr` — the store (store.ts) is the only caller, and it
+// doesn't care which underlying path ran. (A third path, `runVoiceParse`,
+// existed here until voice logging was removed — see types.ts's
+// `CaptureJobKind` comment.)
 // ═══════════════════════════════════════════════════════════════════════
 
 import { File } from 'expo-file-system';
 import { readFileAsBase64 } from '../ai/media';
-import { runLabelOcr, runMealPhoto, runVoiceParse, type AiRunResult } from '../ai/runs';
+import { runLabelOcr, runMealPhoto, type AiRunResult } from '../ai/runs';
 import type { CaptureJobInput } from './types';
 
 /** Prefers an already-in-memory base64 payload (the normal case right after capture); falls back to reading the file at `uri` otherwise (a retry after this process restarted, where only the on-disk file survived). */
@@ -26,18 +28,16 @@ async function resolveBase64(uri: string, provided?: string): Promise<string> {
 
 /**
  * The one file `executeCaptureJob` cannot proceed without for a given
- * input — the meal-photo/label-OCR photo, or the voice recording. NOT a
- * meal photo's optional `voiceNoteUri`: a missing voice note never fails
- * the job (see the try/catch below), so its absence must never make an
- * otherwise-retriable job look unretriable.
+ * input — the meal-photo/label-OCR photo. NOT a meal photo's optional
+ * `voiceNoteUri`: a missing voice note never fails the job (see the
+ * try/catch below), so its absence must never make an otherwise-retriable
+ * job look unretriable.
  */
 function requiredSourceUri(input: CaptureJobInput): string {
   switch (input.kind) {
     case 'meal_photo':
     case 'label_ocr':
       return input.photoUri;
-    case 'voice':
-      return input.audioUri;
   }
 }
 
@@ -87,11 +87,6 @@ export async function executeCaptureJob(input: CaptureJobInput): Promise<AiRunRe
         textNote: input.textNote,
         voiceNote,
       });
-    }
-
-    case 'voice': {
-      const base64 = await resolveBase64(input.audioUri, input.audioBase64);
-      return runVoiceParse(base64, input.mimeType);
     }
   }
 }

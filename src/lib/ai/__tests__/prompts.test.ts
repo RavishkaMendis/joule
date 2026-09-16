@@ -12,7 +12,38 @@
 // to inflate confidence on portion sizes it still guessed visually.
 // ═══════════════════════════════════════════════════════════════════════
 
-import { buildMealPhotoPrompt, buildPotIngredientsPrompt } from '../prompts';
+import { buildLabelOcrPrompt, buildMealPhotoPrompt, buildPotIngredientsPrompt } from '../prompts';
+
+describe('buildLabelOcrPrompt', () => {
+  // The kJ trap (CLAUDE.md "domain traps", PRD §6) is the single most
+  // likely correctness bug in this whole feature area — a future edit
+  // must not be able to silently drop this instruction while reshaping
+  // the prompt for something else (e.g. telling the model to ignore
+  // background clutter around the panel).
+  it('keeps the kJ-vs-kcal unit-handling instructions', () => {
+    const prompt = buildLabelOcrPrompt();
+    expect(prompt).toContain('energy_unit_detected');
+    expect(prompt).toContain('kilojoules (kJ)');
+    expect(prompt.toLowerCase()).toContain('kcal');
+    expect(prompt).toContain("set energy_unit_detected to 'kJ' or 'kcal'");
+  });
+
+  it('tells the model the panel is the subject and to ignore surrounding clutter', () => {
+    const prompt = buildLabelOcrPrompt();
+    expect(prompt.toLowerCase()).toContain('ignore');
+    expect(prompt).toContain('Nutrition Information Panel');
+  });
+
+  it('still asks for the per-100g column, not per-serving', () => {
+    const prompt = buildLabelOcrPrompt();
+    expect(prompt).toContain('PER-100g');
+  });
+
+  it('reminds the model to respond with JSON only', () => {
+    const prompt = buildLabelOcrPrompt();
+    expect(prompt).toContain('Respond with ONLY JSON');
+  });
+});
 
 describe('buildMealPhotoPrompt with a typed note', () => {
   it('includes the note verbatim so the model sees the exact wording', () => {

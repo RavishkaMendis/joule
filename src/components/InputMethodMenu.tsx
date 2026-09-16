@@ -1,23 +1,24 @@
 // ═══════════════════════════════════════════════════════════════════════
 // InputMethodMenu — the FAB's tap target (PRD §9.1 "tap for menu").
 //
-// Surfaces the five input paths from PRD §7. Every one of them converges
-// on the same shared ConfirmSheet, so this menu only picks HOW the
-// PendingEntry gets populated — it never writes to the log itself.
+// Surfaces the remaining input paths from PRD §7 (voice logging was
+// removed — the owner didn't use it; see InputMethod's comment below).
+// Every one of them converges on the same shared ConfirmSheet, so this
+// menu only picks HOW the PendingEntry gets populated — it never writes
+// to the log itself.
 //
 // Ordering is deliberate and follows the PRD's own priorities rather
 // than alphabetical or "most technically impressive":
-//   1. Voice      — §7.1 calls it the primary path
-//   2. Meal prep  — §7.5, highest-VALUE path for someone who bulk-preps
+//   1. Meal prep  — §7.5, highest-VALUE path for someone who bulk-preps
 //                   and owns a scale (task brief: "the highest-value
 //                   accuracy work in the app" — a pot serving is a scale
 //                   reading against a computed kcal/g, not a guess).
-//                   Placed second, ahead of barcode/label/photo, so it is
+//                   Placed first, ahead of barcode/label/photo, so it is
 //                   never buried behind a Foods-tab sub-tab again.
-//   3. Barcode    — §7.2, fastest when it hits
-//   4. Label OCR  — §7.3 "the workhorse in AU", always available
-//   5. Meal photo — §7.4, honestly the least accurate (±25-40%)
-//   6. Manual     — always works, never network-dependent
+//   2. Barcode    — §7.2, fastest when it hits
+//   3. Label OCR  — §7.3 "the workhorse in AU", always available
+//   4. Meal photo — §7.4, honestly the least accurate (±25-40%)
+//   5. Manual     — always works, never network-dependent
 //
 // AI-backed paths are marked when no Gemini key is configured rather
 // than hidden, so the user can see the capability exists and what
@@ -29,7 +30,7 @@ import { Ionicons } from '@expo/vector-icons';
 import { colors, minTouchTarget, radii, spacing, type } from '../lib/theme';
 import { hasGeminiApiKey } from '../lib/ai/apiKey';
 
-export type InputMethod = 'voice' | 'pot' | 'barcode' | 'label' | 'photo' | 'manual';
+export type InputMethod = 'pot' | 'barcode' | 'label' | 'photo' | 'manual';
 
 type Props = {
   visible: boolean;
@@ -47,7 +48,6 @@ type Option = {
 };
 
 const OPTIONS: Option[] = [
-  { method: 'voice', icon: 'mic-outline', label: 'Voice', hint: 'Say what you ate', needsAi: true },
   {
     method: 'pot',
     icon: 'restaurant-outline',

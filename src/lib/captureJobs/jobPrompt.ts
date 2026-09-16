@@ -24,7 +24,7 @@
 // ═══════════════════════════════════════════════════════════════════════
 
 import { captureJobKindLabel } from './jobReducer';
-import type { CaptureJob, CaptureJobKind } from './types';
+import type { CaptureJob } from './types';
 
 export type JobTapAction =
   | { kind: 'open_confirm' } // status === 'done' — open the shared ConfirmSheet, exactly as today.
@@ -41,11 +41,6 @@ export function jobTapAction(job: CaptureJob): JobTapAction {
     case 'processing':
       return { kind: 'none' };
   }
-}
-
-/** "photo" for the two vision paths, "recording" for voice — used in the unretryable copy below. */
-function sourceNoun(kind: CaptureJobKind): string {
-  return kind === 'voice' ? 'recording' : 'photo';
 }
 
 export type FailedJobPrompt = {
@@ -69,7 +64,7 @@ export function describeFailedJobPrompt(job: CaptureJob, sourceExists: boolean):
   const reason = job.errorMessage ?? 'Something went wrong.';
   const unretryableNote = sourceExists
     ? ''
-    : `\n\nThe ${sourceNoun(job.input.kind)} is no longer on this device, so this can't be retried.`;
+    : `\n\nThe photo is no longer on this device, so this can't be retried.`;
 
   return {
     title: `${kindLabel} failed`,

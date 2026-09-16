@@ -10,10 +10,11 @@
 // `getGeminiTransport()` decides which; this file just executes whichever
 // transport it's handed. See `callOnce` for the two request shapes.
 //
-// Models (PRD §8): Flash-Lite for label OCR and voice parsing (cheap,
-// fast, plenty for structured single-image/audio extraction); Flash for
-// meal photos (harder vision task — multiple food components on one
-// plate — worth the larger model).
+// Models (PRD §8): Flash-Lite for label OCR (cheap, fast, plenty for
+// structured single-image extraction); Flash for meal photos (harder
+// vision task — multiple food components on one plate — worth the larger
+// model). A third tier, `voice`, existed here for the now-removed voice
+// capture path (PRD §7.1) — see src/lib/captureJobs/types.ts.
 //
 // ⚠️ 2026-08-27: the gemini-2.5-* ids this originally shipped with were
 // retired mid-flight. A real device hit:
@@ -34,7 +35,7 @@
 //
 // If Google renames/retires these, only this file (and the proxy's
 // mirrored allowlist) needs updating — every caller goes through
-// `runLabelOcr` / `runVoiceParse` / `runMealPhoto`.
+// `runLabelOcr` / `runMealPhoto`.
 //
 // Structured output (PRD §8): `responseMimeType: application/json` +
 // `responseSchema` forces the shape described in schema.ts. "Reject and
@@ -63,8 +64,6 @@ import { GEMINI_RESPONSE_SCHEMA, isGeminiStructuredResponse, type GeminiStructur
 export const GEMINI_MODELS = {
   /** Label OCR: single nutrition-panel photo, structured JSON out. */
   labelOcr: 'gemini-3.5-flash-lite',
-  /** Voice parsing: audio in, structured JSON out. */
-  voice: 'gemini-3.5-flash-lite',
   /** Meal photo: harder multi-component vision task. */
   mealPhoto: 'gemini-3.6-flash',
 } as const;

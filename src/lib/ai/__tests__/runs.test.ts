@@ -1,5 +1,5 @@
 // ═══════════════════════════════════════════════════════════════════════
-// ORCHESTRATION TESTS — runLabelOcr / runMealPhoto / runVoiceParse.
+// ORCHESTRATION TESTS — runLabelOcr / runMealPhoto / runPotIngredientsPhoto.
 //
 // Exercises the full path from a fake `fetch` response through to
 // PendingEntry[], including the missing-key degrade-gracefully behavior
@@ -8,7 +8,7 @@
 // covered in mapToPendingEntry.test.ts).
 // ═══════════════════════════════════════════════════════════════════════
 
-import { runLabelOcr, runMealPhoto, runVoiceParse, runPotIngredientsPhoto } from '../runs';
+import { runLabelOcr, runMealPhoto, runPotIngredientsPhoto } from '../runs';
 
 const ORIGINAL_ENV = process.env.EXPO_PUBLIC_GEMINI_API_KEY;
 const ORIGINAL_FETCH = global.fetch;
@@ -67,28 +67,6 @@ describe('run* orchestration', () => {
     expect(result.entries).toHaveLength(1);
     expect(result.entries[0].kcal).toBeCloseTo(358.5, 0);
     expect(result.entries[0].source).toBe('label_ocr');
-  });
-
-  it('runVoiceParse produces multiple entries from one audio call (the "one wrap..." example)', async () => {
-    process.env.EXPO_PUBLIC_GEMINI_API_KEY = 'test-key';
-    mockFetchOnce(
-      JSON.stringify({
-        items: [
-          { name: 'Wrap', grams: 60, kcal_per_100g: 280, energy_unit_detected: 'kcal', protein_per_100g: 8, carbs_per_100g: 45, fat_per_100g: 6, confidence: 'high', assumptions: '' },
-          { name: 'Chicken breast', grams: 150, kcal_per_100g: 165, energy_unit_detected: 'kcal', protein_per_100g: 31, carbs_per_100g: 0, fat_per_100g: 3.6, confidence: 'high', assumptions: '' },
-          { name: 'Olive oil', grams: 14, kcal_per_100g: 884, energy_unit_detected: 'kcal', protein_per_100g: 0, carbs_per_100g: 0, fat_per_100g: 100, confidence: 'high', assumptions: '1 tbsp ≈ 14g' },
-          { name: 'Greek yoghurt', grams: 30, kcal_per_100g: 97, energy_unit_detected: 'kcal', protein_per_100g: 9, carbs_per_100g: 4, fat_per_100g: 5, confidence: 'medium', assumptions: '' },
-        ],
-      })
-    );
-
-    const result = await runVoiceParse('base64audio', 'audio/m4a');
-
-    expect(result.ok).toBe(true);
-    if (!result.ok) return;
-    expect(result.entries).toHaveLength(4);
-    expect(result.entries.every((e) => e.source === 'voice')).toBe(true);
-    expect(result.entries[2].assumptions).toBe('1 tbsp ≈ 14g');
   });
 
   it('runMealPhoto applies user quantity overrides on top of the model estimate', async () => {

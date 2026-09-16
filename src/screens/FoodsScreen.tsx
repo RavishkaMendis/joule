@@ -15,6 +15,35 @@
 // bug. Reopening a finished pot or duplicating it for "cook this again"
 // both happen from PotLogServingScreen, which every row here (in either
 // filter) navigates to.
+//
+// SAVED-FOOD ROW TAP (task brief: "how to add saved food to my current
+// day?" — the answer used to be "you can't"): a saved-food row is now
+// tappable, matching the Pots tab's own row-interaction pattern in this
+// same screen (Pressable row -> confirmation surface) rather than
+// inventing a different one. It opens the ONE shared `ConfirmSheet` (PRD
+// §7) via `pendingEntryFromSavedFood` so grams can be adjusted before
+// saving — `default_grams` is only a captured guess from whenever the
+// food was first logged — rather than committing to it blindly the way
+// the QuickAddChips one-tap path deliberately still does.
+//
+// WHAT DATE DOES IT LOG AGAINST? Foods is a bottom TAB (`Foods: undefined`
+// in navigation.ts's TabParamList — no params at all), a sibling of
+// Today, not a screen Today pushes with a `date` param the way FoodEntry/
+// BarcodeScan/etc. all are. Today's "day currently being viewed" is
+// `selectedDate`, plain `useState` local to TodayScreen's own component
+// instance (see that screen) — it is not threaded through navigation
+// params, a route, or any shared store, so there is no cross-screen
+// "day the app is currently showing" for this screen to read. Building
+// one would mean either adding shared state that TodayScreen writes to
+// (touching a screen outside this task's scope and risking collision
+// with the other agents working in this codebase right now) or threading
+// a param through `navigation.ts`/`App.tsx`, both explicitly off-limits
+// for this change. Given that, and given Foods itself has no day-based
+// view of its own (it's a library, not a daily log), the correct source
+// of truth reachable from here is `todayLocalISO()` — not a silent lazy
+// default, but the only "day this screen is showing" that actually
+// exists for it. If a shared "day Today is browsing" concept is added
+// later, this is the one place that would need to start reading it.
 // ═══════════════════════════════════════════════════════════════════════
 
 import { useCallback, useState } from 'react';
@@ -29,6 +58,9 @@ import * as foodRepo from '../db/repositories/foodRepo';
 import * as potRepo from '../db/repositories/potRepo';
 import type { SavedFoodRow, PotRow } from '../db/types';
 import { potRemainingStatus } from '../lib/potActions';
+import { pendingEntryFromSavedFood, recordSavedFoodUse } from '../lib/foodEntryActions';
+import { todayLocalISO } from '../lib/localDate';
+import { ConfirmSheet } from '../components/ConfirmSheet';
 
 type Nav = NativeStackNavigationProp<RootStackParamList>;
 type Tab = 'foods' | 'pots';
@@ -50,6 +82,12 @@ export function FoodsScreen() {
   const [query, setQuery] = useState('');
   const [foods, setFoods] = useState<SavedFoodRow[]>([]);
   const [pots, setPots] = useState<PotRow[]>([]);
+  // The saved food currently open in the confirmation sheet, or null when
+  // it's closed. Kept as the whole row (not just a built PendingEntry) so
+  // the confirm handler below can still reach `.id` for the use_count
+  // bump — see this file's header for why that bump can't happen inside
+  // ConfirmSheet itself.
+  const [confirmFood, setConfirmFood] = useState<SavedFoodRow | null>(null);
 
   const loadFoods = useCallback(async (q: string) => {
     const db = await getDatabase();
@@ -85,6 +123,27 @@ export function FoodsScreen() {
     void loadPots(filter);
   };
 
+  // Opens the shared ConfirmSheet for a tapped saved-food row (task brief:
+  // "make a saved-food row tappable"). Building the PendingEntry happens
+  // in the render below (pendingEntryFromSavedFood is pure/cheap) so it
+  // always reflects the row currently in `confirmFood`.
+  const handleFoodTap = useCallback((food: SavedFoodRow) => {
+    setConfirmFood(food);
+  }, []);
+
+  const handleConfirmFoodLogged = useCallback(async () => {
+    if (!confirmFood) return;
+    const db = await getDatabase();
+    // ConfirmSheet has already written the food_entry itself by the time
+    // onConfirm fires (see its own header doc) — this only does the part
+    // it can't: bumping the ORIGINATING saved_food row's use_count, since
+    // ConfirmSheet has no notion that this PendingEntry came from one.
+    await recordSavedFoodUse(db, confirmFood.id);
+    setConfirmFood(null);
+    // Refresh so "used Nx" and frequency ranking reflect the new count.
+    void loadFoods(query);
+  }, [confirmFood, loadFoods, query]);
+
   return (
     <View style={[styles.screen, { paddingTop: insets.top + spacing.md }]}>
       <Text style={styles.header}>Foods &amp; Pots</Text>
@@ -107,16 +166,17 @@ export function FoodsScreen() {
             data={foods}
             keyExtractor={(item) => item.id}
             contentContainerStyle={styles.listContent}
-            renderItem={({ item }) => <SavedFoodRowItem food={item} />}
+            renderItem={({ item }) => <SavedFoodRowItem food={item} onTap={() => handleFoodTap(item)} />}
             ListEmptyComponent={<Text style={styles.emptyText}>No saved foods yet — they&apos;re added from the food entry screen.</Text>}
             // The search TextInput above keeps focus (and the keyboard up)
             // while this list is scrolled/tapped. Without this prop RN's
             // default ("never") means the FIRST tap on anything in the
             // list only dismisses the keyboard rather than reaching the
-            // list — so any future tappable affordance on a saved-food row
-            // (or a tap that lands on the list while typing) would need a
-            // second tap to register. "handled" matches the app's other
-            // search-above-list screens (see FoodEntryScreen's ScrollView).
+            // list — so tapping a saved-food row (now that it opens the
+            // confirmation sheet — see this file's header) or a tap that
+            // lands on the list while typing would need a second tap to
+            // register. "handled" matches the app's other search-above-
+            // list screens (see FoodEntryScreen's ScrollView).
             keyboardShouldPersistTaps="handled"
           />
         </>
@@ -150,6 +210,21 @@ export function FoodsScreen() {
           />
         </>
       )}
+
+      {/* The ONE shared confirmation sheet (PRD §7), reused rather than a
+          bespoke dialog — see this file's header for the date/grams/
+          confidence reasoning. Rendered as a sibling of the tab content
+          (ConfirmSheet is its own full-screen Modal) so mounting/
+          unmounting it doesn't disturb the list's scroll position. */}
+      {confirmFood && (
+        <ConfirmSheet
+          entries={[pendingEntryFromSavedFood(confirmFood)]}
+          date={todayLocalISO()}
+          onConfirm={handleConfirmFoodLogged}
+          onCancel={() => setConfirmFood(null)}
+          fallbackAction={undefined}
+        />
+      )}
     </View>
   );
 }
@@ -162,9 +237,17 @@ function TabButton({ label, active, onPress }: { label: string; active: boolean;
   );
 }
 
-function SavedFoodRowItem({ food }: { food: SavedFoodRow }) {
+// Tappable — matches PotRowItem's own row-interaction pattern in this
+// same screen (Pressable row, pressed-state highlight) rather than
+// inventing a different one for the Foods tab (task brief).
+function SavedFoodRowItem({ food, onTap }: { food: SavedFoodRow; onTap: () => void }) {
   return (
-    <View style={styles.row}>
+    <Pressable
+      onPress={onTap}
+      style={({ pressed }) => [styles.row, pressed && styles.rowPressed]}
+      accessibilityRole="button"
+      accessibilityLabel={`Log ${food.name}, ${Math.round(food.default_grams)} grams`}
+    >
       <View style={styles.rowMiddle}>
         <Text style={styles.rowName}>{food.name}</Text>
         <Text style={styles.rowMeta}>
@@ -172,7 +255,7 @@ function SavedFoodRowItem({ food }: { food: SavedFoodRow }) {
         </Text>
       </View>
       <Text style={styles.rowGrams}>{Math.round(food.default_grams)}g</Text>
-    </View>
+    </Pressable>
   );
 }
 

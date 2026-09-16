@@ -8,7 +8,6 @@
 const mockReadFileAsBase64 = jest.fn();
 const mockRunLabelOcr = jest.fn();
 const mockRunMealPhoto = jest.fn();
-const mockRunVoiceParse = jest.fn();
 
 jest.mock('../../ai/media', () => ({
   readFileAsBase64: (...args: unknown[]) => mockReadFileAsBase64(...args),
@@ -17,7 +16,6 @@ jest.mock('../../ai/media', () => ({
 jest.mock('../../ai/runs', () => ({
   runLabelOcr: (...args: unknown[]) => mockRunLabelOcr(...args),
   runMealPhoto: (...args: unknown[]) => mockRunMealPhoto(...args),
-  runVoiceParse: (...args: unknown[]) => mockRunVoiceParse(...args),
 }));
 
 import { File, Paths } from 'expo-file-system';
@@ -108,26 +106,6 @@ describe('meal_photo', () => {
   });
 });
 
-describe('voice', () => {
-  it('uses the in-memory base64 without touching the filesystem', async () => {
-    mockRunVoiceParse.mockResolvedValue(OK_RESULT);
-    await executeCaptureJob({ kind: 'voice', audioUri: 'file:///note.m4a', audioBase64: 'AUDIO', mimeType: 'audio/m4a' });
-
-    expect(mockReadFileAsBase64).not.toHaveBeenCalled();
-    expect(mockRunVoiceParse).toHaveBeenCalledWith('AUDIO', 'audio/m4a');
-  });
-
-  it('re-reads the file when no in-memory base64 survived', async () => {
-    mockReadFileAsBase64.mockResolvedValue('REREAD_AUDIO');
-    mockRunVoiceParse.mockResolvedValue(OK_RESULT);
-
-    await executeCaptureJob({ kind: 'voice', audioUri: 'file:///note.m4a', mimeType: 'audio/m4a' });
-
-    expect(mockReadFileAsBase64).toHaveBeenCalledWith('file:///note.m4a');
-    expect(mockRunVoiceParse).toHaveBeenCalledWith('REREAD_AUDIO', 'audio/m4a');
-  });
-});
-
 // ═══════════════════════════════════════════════════════════════════════
 // captureJobSourceExists — the "is a retry even possible" check that
 // CaptureJobsIndicator.tsx runs before offering "Try again" on a failed
@@ -187,15 +165,5 @@ describe('captureJobSourceExists', () => {
       new File(photoUri).delete();
     }
     expect(captureJobSourceExists({ kind: 'label_ocr', photoUri })).toBe(false);
-  });
-
-  it('is true for a voice job whose audio file is still on disk, false once it is gone', () => {
-    const audioUri = writeTempFile(`capture-job-test-${Date.now()}-d.m4a`);
-    try {
-      expect(captureJobSourceExists({ kind: 'voice', audioUri, mimeType: 'audio/m4a' })).toBe(true);
-    } finally {
-      new File(audioUri).delete();
-    }
-    expect(captureJobSourceExists({ kind: 'voice', audioUri, mimeType: 'audio/m4a' })).toBe(false);
   });
 });

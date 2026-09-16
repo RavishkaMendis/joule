@@ -6,12 +6,25 @@
 // Node-testable functions rather than buried in a component's onPress.
 // This is also where the PRD §9.1 10-second test is enforced structurally:
 // `logQuickAdd` is a single call, no confirmation step, one tap in the UI.
+//
+// `pendingEntryFromSavedFood`/`recordSavedFoodUse` below are the
+// counterpart for FoodsScreen's "Saved foods" tab (task brief: "make a
+// saved-food row tappable"): unlike `logQuickAdd`, that path deliberately
+// does NOT skip the confirmation sheet — `default_grams` is only a
+// captured guess from whenever the food was first logged, and committing
+// to it blindly there is exactly how wrong data gets in. So a saved-food
+// row builds a `PendingEntry` and hands it to the shared `ConfirmSheet`
+// instead, which does its own `foodRepo.addEntry` write on confirm; the
+// use_count bump has to happen separately from FoodsScreen's confirm
+// handler because ConfirmSheet has no notion that a given PendingEntry
+// came from an existing saved_food row.
 // ═══════════════════════════════════════════════════════════════════════
 
 import type { Database } from '../db/database';
 import type { FoodEntryRow, SavedFoodRow } from '../db/types';
 import * as foodRepo from '../db/repositories/foodRepo';
 import { generateId } from './ids';
+import { scaleFromPer100g, type PendingEntry } from './pendingEntry';
 
 /**
  * Quick-add's default confidence for a saved_food row that predates
@@ -71,6 +84,60 @@ export async function logQuickAdd(
   await foodRepo.incrementUse(db, savedFood.id, loggedAt);
 
   return entry;
+}
+
+/**
+ * Builds a `PendingEntry` from a saved-food library row, for FoodsScreen's
+ * "Saved foods" tab (task brief: "make a saved-food row tappable"). Grams
+ * default to the row's `default_grams` — the same starting point
+ * `logQuickAdd` uses — but this is only a starting point: `per100g` is
+ * populated with the saved food's REAL per-100g values so the shared
+ * `ConfirmSheet` can rescale macros exactly via `scaleFromPer100g` as the
+ * user edits grams, rather than the row's stale absolute macros ever
+ * being scaled directly (task brief: "saved_food stores real per-100g
+ * values, so scaling is exact here").
+ *
+ * Confidence carries over from the saved_food row (schema v3), with the
+ * same `LEGACY_SAVED_FOOD_CONFIDENCE` fallback `logQuickAdd` uses for a
+ * pre-v3 row where `confidence` is NULL — see that constant's doc above
+ * for the full reasoning (PRD §10: "Confidence always visible" — this
+ * must not silently promote a low/medium-confidence saved food to
+ * `exact` just because it's being tapped from the library).
+ *
+ * `source: 'manual'` for the same reason `logQuickAdd` uses it: this is a
+ * manually-curated saved food being manually re-selected, not a fresh
+ * AI/barcode read.
+ */
+export function pendingEntryFromSavedFood(savedFood: SavedFoodRow): PendingEntry {
+  const per100g = {
+    kcal: savedFood.kcal_per_100g,
+    protein_g: savedFood.protein_per_100g,
+    carbs_g: savedFood.carbs_per_100g,
+    fat_g: savedFood.fat_per_100g,
+  };
+  const grams = savedFood.default_grams;
+
+  return {
+    name: savedFood.name,
+    grams,
+    ...scaleFromPer100g(per100g, grams),
+    confidence: savedFood.confidence ?? LEGACY_SAVED_FOOD_CONFIDENCE,
+    source: 'manual',
+    per100g,
+  };
+}
+
+/**
+ * Bumps a saved food's `use_count`/`last_used` once the shared
+ * `ConfirmSheet` has logged it via `pendingEntryFromSavedFood` above.
+ * ConfirmSheet's own `foodRepo.addEntry` write has no idea a given
+ * `PendingEntry` originated from an existing `saved_food` row — this is
+ * called explicitly from FoodsScreen's confirmation callback so quick-add
+ * ranking (`foodRepo.getQuickAddCandidates`) keeps adapting from this
+ * path exactly as it already does for one-tap `logQuickAdd` chips.
+ */
+export async function recordSavedFoodUse(db: Database, savedFoodId: string, usedAt: number = Date.now()): Promise<void> {
+  await foodRepo.incrementUse(db, savedFoodId, usedAt);
 }
 
 export type ManualEntryInput = {

@@ -85,7 +85,6 @@ import { ProgramExerciseFormScreen } from './src/screens/ProgramExerciseFormScre
 import { BarcodeScanScreen } from './src/screens/BarcodeScanScreen';
 import { LabelScanScreen } from './src/screens/LabelScanScreen';
 import { MealPhotoScreen } from './src/screens/MealPhotoScreen';
-import { VoiceLogScreen } from './src/screens/VoiceLogScreen';
 
 const Tab = createBottomTabNavigator<TabParamList>();
 const Stack = createNativeStackNavigator<RootStackParamList>();
@@ -281,21 +280,14 @@ export default function App() {
             <Stack.Screen name="ProgramDayForm" component={ProgramDayFormScreen} options={{ presentation: 'modal', title: 'Day' }} />
             <Stack.Screen name="ProgramExerciseForm" component={ProgramExerciseFormScreen} options={{ presentation: 'modal', title: 'Exercise' }} />
           {/*
-            Capture routes. Camera-based paths hide the header so the
-            viewfinder is unobstructed; voice keeps a title since it's a
-            simple hold-to-record surface, not a full-bleed preview.
+            Capture routes. These hide the header so the viewfinder is
+            unobstructed. Voice logging (a fourth capture route) was
+            removed — the owner didn't use it; see InputMethodMenu.tsx and
+            navigation.ts for the rest of that removal.
           */}
           <Stack.Screen name="BarcodeScan" component={BarcodeScanScreen} options={{ presentation: 'modal', headerShown: false }} />
           <Stack.Screen name="LabelScan" component={LabelScanScreen} options={{ presentation: 'modal', headerShown: false }} />
           <Stack.Screen name="MealPhoto" component={MealPhotoScreen} options={{ presentation: 'modal', headerShown: false }} />
-          <Stack.Screen name="VoiceLog" component={VoiceLogScreen} options={{ presentation: 'modal', title: 'Voice' }} />
-            {/* Route registration point: barcode scan, label OCR, meal photo,
-                and voice log screens land here once their owning agents
-                finish (src/lib/foodSources/**, src/lib/ai/**,
-                BarcodeScanScreen/LabelScanScreen/MealPhotoScreen/
-                VoiceLogScreen). Wire them as `presentation: 'modal'`
-                Stack.Screen entries consistent with FoodEntry/PotCreate
-                above — do not guess at their route names ahead of time. */}
           </Stack.Navigator>
         </NavigationContainer>
         <StatusBar style="light" />

@@ -154,27 +154,31 @@ export type RootStackParamList = {
   /** Scans logged food_entry rows for arithmetic/unit-conversion damage (e.g. the OFF kJ/4.184 bug) and lets the user apply macro-derived fixes, per-entry or in bulk — never automatically. Entry point lives on SettingsScreen. */
   DataHealth: undefined;
   // ─── Capture routes (PRD §7) ───
-  // All five input paths converge on the one shared ConfirmSheet (see
-  // src/lib/pendingEntry.ts), so none of these carry entry params — each
-  // screen builds PendingEntry[] internally and hands it to the sheet.
-  // BarcodeScan falls back to LabelScan on a miss (PRD §7.2: "never
-  // dead-end the user"), so both must stay registered together.
+  // The remaining input paths converge on the one shared ConfirmSheet
+  // (see src/lib/pendingEntry.ts), so none of these carry entry params —
+  // each screen builds PendingEntry[] internally and hands it to the
+  // sheet. BarcodeScan falls back to LabelScan on a miss (PRD §7.2:
+  // "never dead-end the user"), so both must stay registered together.
+  // Voice logging (a fourth capture route, `VoiceLog`) was removed — the
+  // owner didn't use it. `food_entry.source = 'voice'` and
+  // `EntrySource`/`FoodEntrySource`'s `'voice'` member stay, since
+  // historical entries logged that way still need to render correctly;
+  // only the route that could CREATE new ones is gone.
   //
   // `date` (optional, defaults to today when omitted — every existing
   // caller/deep-link keeps compiling): the date the user was browsing on
   // Today when they opened this capture route. PRD §10 promises
   // "everything editable forever, including past days," and TodayScreen
   // now threads `selectedDate` into every one of these routes, not just
-  // manual entry — photographing a nutrition label or dictating a voice
-  // note for something eaten yesterday is a legitimate backfill action,
-  // not a live-capture-only flow. `date` is always the ALREADY-clamped
-  // value TodayScreen is displaying (clampToToday in dateNav.ts is the
-  // one choke point that prevents a future date from ever reaching here),
-  // so these screens don't need to re-clamp it themselves.
+  // manual entry — photographing a nutrition label for something eaten
+  // yesterday is a legitimate backfill action, not a live-capture-only
+  // flow. `date` is always the ALREADY-clamped value TodayScreen is
+  // displaying (clampToToday in dateNav.ts is the one choke point that
+  // prevents a future date from ever reaching here), so these screens
+  // don't need to re-clamp it themselves.
   BarcodeScan: { date?: string } | undefined;
   LabelScan: { date?: string } | undefined;
   MealPhoto: { date?: string } | undefined;
-  VoiceLog: { date?: string } | undefined;
   // ─── Strength training routes (Train tab) ───
   // WorkoutSession is used for BOTH starting a new session and editing an
   // existing one — startSession (src/db/repositories/workoutRepo.ts)

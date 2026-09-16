@@ -18,8 +18,20 @@
 
 import type { PendingEntry } from '../pendingEntry';
 
-/** Mirrors the three AI capture paths that can run long enough to matter (PRD §7.1/§7.3/§7.4). Barcode lookup and manual entry are synchronous local/network lookups, not Gemini calls, and never go through this queue. */
-export type CaptureJobKind = 'meal_photo' | 'label_ocr' | 'voice';
+/**
+ * Mirrors the AI capture paths that can run long enough to matter (PRD
+ * §7.3/§7.4). Barcode lookup and manual entry are synchronous
+ * local/network lookups, not Gemini calls, and never go through this
+ * queue. Voice logging (PRD §7.1) was a third such path but has been
+ * removed — the owner didn't use it — so `'voice'` no longer appears
+ * here. A `food_entry` row logged that way before the removal still
+ * carries `source: 'voice'` (see src/db/types.ts's `FoodEntrySource`),
+ * but that's a persisted RESULT, unlike this transient working-state
+ * union: an old capture job row can still have `input.kind === 'voice'`
+ * on disk (see persistence.ts), and hydration is written to drop it
+ * silently rather than assume this type still describes it.
+ */
+export type CaptureJobKind = 'meal_photo' | 'label_ocr';
 
 /**
  * Everything needed to run (or re-run) a job's Gemini call. `*Base64`
@@ -47,12 +59,6 @@ export type CaptureJobInput =
       photoUri: string;
       photoBase64?: string;
       photoMimeType?: string;
-    }
-  | {
-      kind: 'voice';
-      audioUri: string;
-      audioBase64?: string;
-      mimeType: string;
     };
 
 export type CaptureJobStatus = 'processing' | 'done' | 'error';

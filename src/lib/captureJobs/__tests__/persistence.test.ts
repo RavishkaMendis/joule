@@ -55,13 +55,16 @@ describe('upsertJob / listJobs', () => {
   it('preserves each capture kind\'s exact input shape', async () => {
     const db = createTestDatabase();
     const labelJob = job({ id: 'job_2', input: { kind: 'label_ocr', photoUri: 'file:///label.jpg' } });
-    const voiceJob = job({ id: 'job_3', input: { kind: 'voice', audioUri: 'file:///note.m4a', mimeType: 'audio/m4a' } });
+    const mealPhotoWithVoiceNoteJob = job({
+      id: 'job_3',
+      input: { kind: 'meal_photo', photoUri: 'file:///photo.jpg', voiceNoteUri: 'file:///note.m4a', voiceNoteMimeType: 'audio/m4a' },
+    });
     await upsertJob(db, labelJob);
-    await upsertJob(db, voiceJob);
+    await upsertJob(db, mealPhotoWithVoiceNoteJob);
 
     const rows = await listJobs(db);
     expect(rows.find((r) => r.id === 'job_2')?.input).toEqual(labelJob.input);
-    expect(rows.find((r) => r.id === 'job_3')?.input).toEqual(voiceJob.input);
+    expect(rows.find((r) => r.id === 'job_3')?.input).toEqual(mealPhotoWithVoiceNoteJob.input);
   });
 
   it('REPLACEs an existing row on conflict rather than duplicating it', async () => {

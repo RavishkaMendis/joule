@@ -45,7 +45,7 @@
 // ═══════════════════════════════════════════════════════════════════════
 
 import { useCallback, useEffect, useState } from 'react';
-import { BackHandler, StyleSheet, View } from 'react-native';
+import { BackHandler, StyleSheet, useWindowDimensions, View } from 'react-native';
 import { CameraView, useCameraPermissions, type CameraCapturedPicture } from 'expo-camera';
 import * as ImagePicker from 'expo-image-picker';
 import { useFocusEffect, useNavigation, useRoute } from '@react-navigation/native';
@@ -53,8 +53,9 @@ import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import type { NativeStackNavigationProp } from '@react-navigation/native-stack';
 import type { RouteProp } from '@react-navigation/native';
 import type { RootStackParamList } from '../lib/navigation';
-import { colors, spacing } from '../lib/theme';
+import { colors, radii, spacing } from '../lib/theme';
 import { resolveCaptureDate } from '../lib/dateNav';
+import { computeScanGuideRect } from '../lib/scanGuide';
 import { getDatabase } from '../lib/db';
 import { ConfirmSheet } from '../components/ConfirmSheet';
 import type { PendingEntry } from '../lib/pendingEntry';
@@ -100,6 +101,8 @@ export function LabelScanScreen() {
   const route = useRoute<Route>();
   const date = resolveCaptureDate(route.params?.date);
   const insets = useSafeAreaInsets();
+  const { width: viewportWidth, height: viewportHeight } = useWindowDimensions();
+  const scanGuide = computeScanGuideRect(viewportWidth, viewportHeight, insets);
   const [permission, requestPermission] = useCameraPermissions();
   const [phase, setPhase] = useState<CapturePhase>(INITIAL_CAPTURE_PHASE);
   const [cameraRef, setCameraRef] = useState<CameraView | null>(null);
@@ -280,25 +283,43 @@ export function LabelScanScreen() {
     );
   }
 
+  // Dimmed scrim with a clear window around `scanGuide`, built from plain
+  // views (no new native dependency, no crop): a full-width band above
+  // and below the guide, plus a row that scrims the left/right of it.
+  // The guide is still just a framing aid — the whole camera frame is
+  // captured and sent to Gemini either way (see file header), so the
+  // hint below says "fill the frame", never anything implying a crop.
   return (
     <View style={styles.screen}>
       <CameraView style={StyleSheet.absoluteFill} facing="back" ref={setCameraRef} />
-      <View style={[styles.overlay, { paddingTop: insets.top + spacing.lg, paddingBottom: insets.bottom + spacing.lg }]}>
-        <CaptureDateBanner date={date} />
-        <View style={styles.scanFrame} />
-        <CaptureHint>Frame the per-100g nutrition column</CaptureHint>
+      <View style={styles.overlay}>
+        <View style={[styles.scrimBand, { paddingTop: insets.top + spacing.lg }]}>
+          <CaptureDateBanner date={date} />
+        </View>
 
-        <View style={styles.spacer} />
+        <View style={[styles.guideRow, { height: scanGuide.height }]}>
+          <View style={styles.scrimSide} />
+          <View style={[styles.guideBox, { width: scanGuide.width, height: scanGuide.height }]} />
+          <View style={styles.scrimSide} />
+        </View>
 
-        <CaptureControlBar
-          onShutterPress={() => void handleCapture()}
-          onGalleryPress={() => void handlePickFromGallery()}
-          onManualEntryPress={goToManualEntry}
-        />
+        <View style={[styles.scrimBand, { paddingBottom: insets.bottom + spacing.lg }]}>
+          <CaptureHint>Fill the frame with the panel</CaptureHint>
+
+          <View style={styles.spacer} />
+
+          <CaptureControlBar
+            onShutterPress={() => void handleCapture()}
+            onGalleryPress={() => void handlePickFromGallery()}
+            onManualEntryPress={goToManualEntry}
+          />
+        </View>
       </View>
     </View>
   );
 }
+
+const SCRIM_COLOR = 'rgba(0,0,0,0.55)';
 
 const styles = StyleSheet.create({
   screen: {
@@ -307,18 +328,26 @@ const styles = StyleSheet.create({
   },
   overlay: {
     flex: 1,
+  },
+  scrimBand: {
+    flex: 1,
     alignItems: 'center',
     paddingHorizontal: spacing.lg,
+    backgroundColor: SCRIM_COLOR,
+  },
+  guideRow: {
+    flexDirection: 'row',
+  },
+  scrimSide: {
+    flex: 1,
+    backgroundColor: SCRIM_COLOR,
+  },
+  guideBox: {
+    borderWidth: 2,
+    borderColor: colors.accent,
+    borderRadius: radii.lg,
   },
   spacer: {
     flex: 1,
-  },
-  scanFrame: {
-    width: 300,
-    height: 200,
-    borderWidth: 2,
-    borderColor: colors.accent,
-    borderRadius: 10,
-    marginTop: spacing.xl,
   },
 });

@@ -12,7 +12,8 @@
 //   3. Weight prompt (only if no reading logged yet for the SELECTED day, PRD §9.6)
 //   4. Quick-add chips (PRD §9.1's "highest value-per-line-of-code")
 //   5. Entry list (selected day's items, tap to edit, swipe to delete)
-//   6. FAB (PRD §9.1: tap for the input-method menu, hold for voice)
+//   6. FAB (tap for the input-method menu — PRD §9.1 originally also
+//      specified "hold for voice"; voice logging has since been removed)
 //
 // Wiring constraint (task brief, the most important one): this screen
 // reads `targets` from useEngine's stored snapshot and NEVER calls
@@ -121,7 +122,7 @@ export function TodayScreen() {
   // "Today" is always one tap away via DateHeader regardless of how far
   // back this has been navigated (task requirement). Every load below
   // reads/writes against `selectedDate`, never a hardcoded `today` — the
-  // one exception is capture routes (voice/barcode/label/photo), which
+  // one exception is capture routes (barcode/label/photo), which
   // intentionally always log against today; see handleSelectInput below.
   const [selectedDate, setSelectedDate] = useState(today);
   const isViewingToday = selectedDate === today;
@@ -138,30 +139,28 @@ export function TodayScreen() {
   // shared ConfirmSheet, so this only picks a capture route — nothing
   // here writes to the log.
   //
-  // Every capture route, including voice/barcode/label/photo, threads
+  // Every capture route, including barcode/label/photo, threads
   // `selectedDate` through (task correction: a previous pass here logged
-  // every camera/mic route against today unconditionally, reasoning they
+  // every camera route against today unconditionally, reasoning they
   // were "live capture only" — that's wrong. Photographing a nutrition
-  // label or dictating a voice note for something eaten yesterday is a
-  // perfectly ordinary backfill action, and PRD §10 promises "everything
-  // editable forever, including past days." Silently landing those on
-  // today would be a data-integrity bug the user only notices days later.
-  // Each capture screen shows a "Logging to <date>" line whenever
-  // `selectedDate` isn't today, so this is never a SILENT change of date —
-  // see CaptureHint's dateLabel usage in those screens).
+  // label for something eaten yesterday is a perfectly ordinary backfill
+  // action, and PRD §10 promises "everything editable forever, including
+  // past days." Silently landing those on today would be a data-integrity
+  // bug the user only notices days later. Each capture screen shows a
+  // "Logging to <date>" line whenever `selectedDate` isn't today, so this
+  // is never a SILENT change of date — see CaptureHint's dateLabel usage
+  // in those screens). Voice logging (a fifth capture route) was removed —
+  // the owner didn't use it; see InputMethodMenu.tsx.
   const handleSelectInput = useCallback(
     (method: InputMethod) => {
       setMenuOpen(false);
       switch (method) {
-        case 'voice':
-          navigation.navigate('VoiceLog', { date: selectedDate });
-          break;
         case 'pot':
           // Meal prep is not date-threaded like the other capture routes:
           // a pot itself isn't logged against a day, and PotQuickAccess
           // always logs a serving against TODAY specifically (matching
           // the live "weigh what's in front of you right now" nature of
-          // the task, same as VoiceLog's own hold-to-record default).
+          // the task).
           navigation.navigate('PotQuickAccess');
           break;
         case 'barcode':
@@ -450,7 +449,7 @@ export function TodayScreen() {
         <View style={styles.bottomPadding} />
       </ScrollView>
 
-      <Fab onPress={() => setMenuOpen(true)} onLongPress={() => navigation.navigate('VoiceLog')} />
+      <Fab onPress={() => setMenuOpen(true)} />
       <InputMethodMenu visible={menuOpen} onSelect={handleSelectInput} onClose={() => setMenuOpen(false)} />
     </View>
   );

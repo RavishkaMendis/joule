@@ -13,6 +13,7 @@ const JSON_ONLY_REMINDER =
 export function buildLabelOcrPrompt(): string {
   return [
     'You are reading a photo of an Australian (or NZ) packaged-food Nutrition Information Panel.',
+    'The Nutrition Information Panel itself is the subject of this photo. The frame may also contain background clutter around it — a hand, a table, other packaging, curved or angled edges of the label — that is not part of the panel. Ignore all of that surrounding content entirely and read only the panel\'s own printed table.',
     'Read the PER-100g (or per-100mL) column, not the per-serving column.',
     "CRITICAL: Australian panels usually list energy in kilojoules (kJ), not kilocalories (kcal). Read the unit label on the panel exactly as printed and set energy_unit_detected to 'kJ' or 'kcal' accordingly. Report kcal_per_100g using WHATEVER unit you detected — do not convert it yourself, the app converts kJ to kcal downstream. If both kJ and kcal are printed, prefer kJ as the detected unit (it's the primary AU/NZ figure) and report that kJ number.",
     'Set grams to 100 unless the photo shows a different reference amount was used for this reading.',
@@ -106,14 +107,4 @@ export function buildPotIngredientsPrompt(textNote?: string): string {
 
   lines.push(JSON_ONLY_REMINDER);
   return lines.join('\n');
-}
-
-export function buildVoicePrompt(): string {
-  return [
-    'You are listening to a short voice note where someone describes food they just ate or are about to eat, typically in casual/shorthand terms (e.g. "one wrap, about 150 grams of chicken, tablespoon of oil, bit of yoghurt").',
-    'Parse it into one item per distinct food mentioned. Use any stated quantity directly (convert household units like "a tablespoon" or "a cup" to grams using standard approximations, e.g. 1 tbsp oil ≈ 14g, 1 cup cooked rice ≈ 175g) and note the conversion you used in "assumptions".',
-    'Where no quantity was stated for an item, estimate a sensible default portion and mark confidence "low"; where the speaker gave an explicit amount, confidence should be "high" (spoken-quantity, not a visual guess) unless the food itself is ambiguous.',
-    'Estimate standard per-100g macros for each named food from general nutrition knowledge. Assume kcal for energy_unit_detected unless the speaker explicitly quotes a kJ figure from a label.',
-    JSON_ONLY_REMINDER,
-  ].join('\n');
 }
