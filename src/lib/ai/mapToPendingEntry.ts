@@ -172,6 +172,34 @@ export function applyUserQuantityOverrides(
   });
 }
 
+/**
+ * Caps confidence for entries that came from the OpenRouter availability
+ * failover (`AiProvider` in geminiClient.ts) rather than Gemini.
+ *
+ * `EntryConfidence` is the model's own self-reported read on ITS estimate
+ * (label legibility / visual-estimate quality) — it says nothing about
+ * which provider answered. But an 'exact'/'high' self-report from
+ * `OPENROUTER_BACKUP_MODEL`, a small model never tuned or prompt-tested
+ * against Joule's food-estimation prompts the way Gemini has been, isn't
+ * evidence of the same quality as an identical claim from Gemini. Rather
+ * than invent a new confidence rung (the task brief is explicit: don't),
+ * a backup-model response is capped at 'medium' — 'exact'/'high' are
+ * demoted, 'medium'/'low' pass through unchanged since they were already
+ * honest about being uncertain.
+ *
+ * Applied BEFORE any user-quantity override (`applyUserQuantityOverrides`)
+ * so a user who actually states a quantity can still promote confidence
+ * afterward — a stated quantity is real evidence regardless of which
+ * model produced the base estimate.
+ */
+export function applyProviderConfidenceCap(entries: PendingEntry[], provider: 'google' | 'openrouter'): PendingEntry[] {
+  if (provider !== 'openrouter') return entries;
+
+  return entries.map((entry) =>
+    entry.confidence === 'exact' || entry.confidence === 'high' ? { ...entry, confidence: 'medium' } : entry
+  );
+}
+
 function namesMatch(a: string, b: string): boolean {
   const na = a.trim().toLowerCase();
   const nb = b.trim().toLowerCase();

@@ -9,6 +9,7 @@
 
 import { kjToKcal } from '../../pendingEntry';
 import {
+  applyProviderConfidenceCap,
   applyUserQuantityOverrides,
   mapGeminiItemToPendingEntry,
   mapGeminiResponseToPendingEntries,
@@ -203,5 +204,62 @@ describe('applyUserQuantityOverrides — PRD §7.4 "user quantities always win"'
     const { entries } = mapGeminiResponseToPendingEntries(response, 'meal_photo');
     const overridden = applyUserQuantityOverrides(entries, []);
     expect(overridden).toEqual(entries);
+  });
+});
+
+describe('applyProviderConfidenceCap — honest confidence for the OpenRouter backup', () => {
+  it('is a no-op for the primary (google) provider, at every confidence level', () => {
+    const response: GeminiStructuredResponse = {
+      items: [
+        fixtureItem({ name: 'A', confidence: 'exact' }),
+        fixtureItem({ name: 'B', confidence: 'high' }),
+        fixtureItem({ name: 'C', confidence: 'medium' }),
+        fixtureItem({ name: 'D', confidence: 'low' }),
+      ],
+    };
+    const { entries } = mapGeminiResponseToPendingEntries(response, 'label_ocr');
+
+    const capped = applyProviderConfidenceCap(entries, 'google');
+
+    expect(capped).toEqual(entries);
+  });
+
+  it('demotes exact and high to medium for the openrouter backup provider', () => {
+    const response: GeminiStructuredResponse = {
+      items: [
+        fixtureItem({ name: 'A', confidence: 'exact' }),
+        fixtureItem({ name: 'B', confidence: 'high' }),
+      ],
+    };
+    const { entries } = mapGeminiResponseToPendingEntries(response, 'label_ocr');
+
+    const capped = applyProviderConfidenceCap(entries, 'openrouter');
+
+    expect(capped.map((e) => e.confidence)).toEqual(['medium', 'medium']);
+  });
+
+  it('leaves an already-honest medium or low confidence unchanged for the openrouter backup provider', () => {
+    const response: GeminiStructuredResponse = {
+      items: [
+        fixtureItem({ name: 'A', confidence: 'medium' }),
+        fixtureItem({ name: 'B', confidence: 'low' }),
+      ],
+    };
+    const { entries } = mapGeminiResponseToPendingEntries(response, 'label_ocr');
+
+    const capped = applyProviderConfidenceCap(entries, 'openrouter');
+
+    expect(capped.map((e) => e.confidence)).toEqual(['medium', 'low']);
+  });
+
+  it('does not mutate fields other than confidence', () => {
+    const response: GeminiStructuredResponse = {
+      items: [fixtureItem({ name: 'Weet-Bix', confidence: 'exact', kcal_per_100g: 250, energy_unit_detected: 'kcal' })],
+    };
+    const { entries } = mapGeminiResponseToPendingEntries(response, 'label_ocr');
+
+    const capped = applyProviderConfidenceCap(entries, 'openrouter');
+
+    expect(capped[0]).toEqual({ ...entries[0], confidence: 'medium' });
   });
 });

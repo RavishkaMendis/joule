@@ -14,7 +14,12 @@
 import type { PendingEntry } from '../pendingEntry';
 import { hasGeminiApiKey } from './apiKey';
 import { callGeminiStructured, GEMINI_MODELS, type InlineMediaPart } from './geminiClient';
-import { applyUserQuantityOverrides, mapGeminiResponseToPendingEntries, type UserQuantityOverride } from './mapToPendingEntry';
+import {
+  applyProviderConfidenceCap,
+  applyUserQuantityOverrides,
+  mapGeminiResponseToPendingEntries,
+  type UserQuantityOverride,
+} from './mapToPendingEntry';
 import { buildLabelOcrPrompt, buildMealPhotoPrompt, buildPotIngredientsPrompt } from './prompts';
 
 export type AiRunResult =
@@ -145,7 +150,12 @@ function finishRun(
   }
 
   const { entries, rejected } = mapGeminiResponseToPendingEntries(result.response, source, result.rawText);
-  const finalEntries = userQuantities ? applyUserQuantityOverrides(entries, userQuantities) : entries;
+  // An OpenRouter-backup-answered entry's confidence is not the same
+  // evidence as a Gemini one (geminiClient.ts's OpenRouter failover) —
+  // capped here, before any user-quantity override, so a real stated
+  // quantity can still promote confidence afterward.
+  const cappedEntries = applyProviderConfidenceCap(entries, result.provider);
+  const finalEntries = userQuantities ? applyUserQuantityOverrides(cappedEntries, userQuantities) : cappedEntries;
 
   if (finalEntries.length === 0) {
     return { ok: false, reason: 'no_items', detail: rejected.map((r) => r.reason).join('; ') || undefined };

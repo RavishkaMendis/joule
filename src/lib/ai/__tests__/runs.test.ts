@@ -248,3 +248,70 @@ describe('run* orchestration — proxy error mapping', () => {
     expect(result.detail).toContain('gemini-3.5-flash-lite');
   });
 });
+
+// ═══════════════════════════════════════════════════════════════════════
+// OPENROUTER FAILOVER, END TO END — the same run* functions the screens
+// call, but with Gemini unavailable behind the proxy so the OpenRouter
+// backup answers instead. Confirms the failover reaches all the way to
+// PendingEntry[], and that a backup-model answer never reports the same
+// confidence as an identical Gemini one would (geminiClient.ts's
+// `AiProvider` threading into `applyProviderConfidenceCap`).
+// ═══════════════════════════════════════════════════════════════════════
+
+describe('run* orchestration — OpenRouter failover', () => {
+  const ORIGINAL_PROXY_URL = process.env.EXPO_PUBLIC_JOULE_PROXY_URL;
+  const ORIGINAL_PROXY_TOKEN = process.env.EXPO_PUBLIC_JOULE_PROXY_TOKEN;
+
+  afterEach(() => {
+    process.env.EXPO_PUBLIC_GEMINI_API_KEY = ORIGINAL_ENV;
+    process.env.EXPO_PUBLIC_JOULE_PROXY_URL = ORIGINAL_PROXY_URL;
+    process.env.EXPO_PUBLIC_JOULE_PROXY_TOKEN = ORIGINAL_PROXY_TOKEN;
+    global.fetch = ORIGINAL_FETCH;
+  });
+
+  it('falls back to OpenRouter when Gemini 5xxs, and caps the resulting entry at medium confidence even though the model claimed exact', async () => {
+    delete process.env.EXPO_PUBLIC_GEMINI_API_KEY;
+    process.env.EXPO_PUBLIC_JOULE_PROXY_URL = 'https://proxy.example/api/gemini';
+    process.env.EXPO_PUBLIC_JOULE_PROXY_TOKEN = 'shared-token';
+
+    let call = 0;
+    global.fetch = jest.fn(async () => {
+      call += 1;
+      if (call === 1) {
+        return {
+          ok: false,
+          status: 503,
+          statusText: 'Service Unavailable',
+          json: async () => ({ error: { message: 'upstream overloaded' } }),
+        };
+      }
+      const content = JSON.stringify({
+        items: [
+          {
+            name: 'Weet-Bix',
+            grams: 100,
+            kcal_per_100g: 250,
+            energy_unit_detected: 'kcal',
+            protein_per_100g: 12,
+            carbs_per_100g: 70,
+            fat_per_100g: 2,
+            confidence: 'exact',
+            assumptions: '',
+          },
+        ],
+      });
+      return { ok: true, status: 200, statusText: '', json: async () => ({ choices: [{ message: { content } }] }) };
+    }) as unknown as typeof fetch;
+
+    const result = await runLabelOcr('base64photo');
+
+    expect(result.ok).toBe(true);
+    if (!result.ok) return;
+    expect(result.entries).toHaveLength(1);
+    // The model reported 'exact', but it answered via the untested backup
+    // provider — that is not the same evidence as Gemini reporting
+    // 'exact', so it must be visibly capped, not passed through verbatim.
+    expect(result.entries[0].confidence).toBe('medium');
+    expect(global.fetch).toHaveBeenCalledTimes(2);
+  });
+});

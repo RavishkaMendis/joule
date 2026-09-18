@@ -8,7 +8,7 @@
 // a different failure mode).
 // ═══════════════════════════════════════════════════════════════════════
 
-import { callGeminiStructured } from '../geminiClient';
+import { callGeminiStructured, OPENROUTER_BACKUP_MODEL } from '../geminiClient';
 
 const ORIGINAL_ENV = process.env.EXPO_PUBLIC_GEMINI_API_KEY;
 
@@ -447,5 +447,231 @@ describe('proxy transport', () => {
     const secondModel = JSON.parse((fetchImpl as jest.Mock).mock.calls[1][1].body as string).model;
     expect(firstModel).toBe('gemini-2.5-flash');
     expect(secondModel).not.toBe('gemini-2.5-flash');
+  });
+});
+
+// ═══════════════════════════════════════════════════════════════════════
+// OPENROUTER AVAILABILITY FAILOVER
+//
+// Gemini fails for the owner once or twice a day — plain outages (5xx,
+// 429, network), not model-deprecation 404s. `MODEL_FALLBACKS` above does
+// nothing for that case (there's no replacement model name to walk to),
+// so this is a genuinely separate mechanism: after Gemini's own chain is
+// exhausted, ONE last attempt goes to OpenRouter's `OPENROUTER_BACKUP_MODEL`
+// — but only through the proxy (the OpenRouter key can never ship in the
+// bundle), and only for availability failures, never 400/401 (those mean
+// a bug/misconfig, and silently switching providers would hide it).
+// ═══════════════════════════════════════════════════════════════════════
+
+describe('OpenRouter availability failover', () => {
+  const ORIGINAL_PROXY_URL = process.env.EXPO_PUBLIC_JOULE_PROXY_URL;
+  const ORIGINAL_PROXY_TOKEN = process.env.EXPO_PUBLIC_JOULE_PROXY_TOKEN;
+
+  afterEach(() => {
+    process.env.EXPO_PUBLIC_GEMINI_API_KEY = ORIGINAL_ENV;
+    process.env.EXPO_PUBLIC_JOULE_PROXY_URL = ORIGINAL_PROXY_URL;
+    process.env.EXPO_PUBLIC_JOULE_PROXY_TOKEN = ORIGINAL_PROXY_TOKEN;
+  });
+
+  function configureProxy() {
+    delete process.env.EXPO_PUBLIC_GEMINI_API_KEY;
+    process.env.EXPO_PUBLIC_JOULE_PROXY_URL = 'https://proxy.example/api/gemini';
+    process.env.EXPO_PUBLIC_JOULE_PROXY_TOKEN = 'shared-token';
+  }
+
+  function openRouterEnvelope(content: string) {
+    return { choices: [{ message: { content } }] };
+  }
+
+  function validItemsJson() {
+    return JSON.stringify({
+      items: [
+        {
+          name: 'Rice',
+          grams: 100,
+          kcal_per_100g: 130,
+          energy_unit_detected: 'kcal',
+          protein_per_100g: 2.7,
+          carbs_per_100g: 28,
+          fat_per_100g: 0.3,
+          confidence: 'high',
+          assumptions: '',
+        },
+      ],
+    });
+  }
+
+  it('fails over to OpenRouter on a 500 from Google, mapping its OpenAI-shaped response into the same GeminiStructuredResponse', async () => {
+    configureProxy();
+    const fetchImpl = fakeFetchSequence([
+      { ok: false, status: 500, statusText: 'Internal Server Error', json: async () => ({ error: { message: 'upstream overloaded' } }) },
+      { ok: true, json: async () => openRouterEnvelope(validItemsJson()) },
+    ]);
+
+    const result = await callGeminiStructured('gemini-3.6-flash', 'prompt', undefined, fetchImpl);
+
+    expect(result.ok).toBe(true);
+    if (!result.ok) return;
+    expect(result.provider).toBe('openrouter');
+    expect(result.response.items[0].name).toBe('Rice');
+    expect(fetchImpl).toHaveBeenCalledTimes(2);
+
+    const secondBody = JSON.parse((fetchImpl as jest.Mock).mock.calls[1][1].body as string);
+    expect(secondBody.provider).toBe('openrouter');
+    expect(secondBody.model).toBe(OPENROUTER_BACKUP_MODEL);
+    expect(secondBody.payload.messages[0].content[0]).toEqual({ type: 'text', text: 'prompt' });
+    expect(secondBody.payload.response_format.type).toBe('json_schema');
+    expect(secondBody.payload.response_format.json_schema.strict).toBe(true);
+  });
+
+  it('fails over to OpenRouter on a 429 from Google', async () => {
+    configureProxy();
+    const fetchImpl = fakeFetchSequence([
+      { ok: false, status: 429, statusText: 'Too Many Requests', json: async () => ({ error: { message: 'quota exceeded' } }) },
+      { ok: true, json: async () => openRouterEnvelope(validItemsJson()) },
+    ]);
+
+    const result = await callGeminiStructured('gemini-3.6-flash', 'prompt', undefined, fetchImpl);
+
+    expect(result.ok).toBe(true);
+    if (!result.ok) return;
+    expect(result.provider).toBe('openrouter');
+    expect(fetchImpl).toHaveBeenCalledTimes(2);
+  });
+
+  it('fails over to OpenRouter on a network error reaching Google', async () => {
+    configureProxy();
+    let call = 0;
+    const fetchImpl = jest.fn(async () => {
+      call += 1;
+      if (call === 1) throw new Error('offline');
+      return { ok: true, status: 200, statusText: '', json: async () => openRouterEnvelope(validItemsJson()) } as unknown as Response;
+    });
+
+    const result = await callGeminiStructured('gemini-3.6-flash', 'prompt', undefined, fetchImpl);
+
+    expect(result.ok).toBe(true);
+    if (!result.ok) return;
+    expect(result.provider).toBe('openrouter');
+    expect(fetchImpl).toHaveBeenCalledTimes(2);
+  });
+
+  it('does NOT fail over on a 400 — surfaces Google/the proxy\'s own error instead', async () => {
+    configureProxy();
+    const fetchImpl = fakeFetchSequence([
+      { ok: false, status: 400, json: async () => ({ error: { message: 'Model not permitted by this proxy: gemini-3.6-flash' } }) },
+    ]);
+
+    const result = await callGeminiStructured('gemini-3.6-flash', 'prompt', undefined, fetchImpl);
+
+    expect(result.ok).toBe(false);
+    if (result.ok) return;
+    expect(result.error.kind).toBe('model_not_permitted');
+    expect(fetchImpl).toHaveBeenCalledTimes(1);
+  });
+
+  it('does NOT fail over on a 401 — a bad/missing proxy token is a config problem, not an availability one', async () => {
+    configureProxy();
+    const fetchImpl = fakeFetchSequence([{ ok: false, status: 401, json: async () => ({ error: { message: 'Unauthorized.' } }) }]);
+
+    const result = await callGeminiStructured('gemini-3.6-flash', 'prompt', undefined, fetchImpl);
+
+    expect(result.ok).toBe(false);
+    if (result.ok) return;
+    expect(result.error.kind).toBe('unauthorized');
+    expect(fetchImpl).toHaveBeenCalledTimes(1);
+  });
+
+  it('does NOT fail over when no proxy is configured — a direct-key transport has no route to OpenRouter', async () => {
+    process.env.EXPO_PUBLIC_GEMINI_API_KEY = 'direct-key';
+    delete process.env.EXPO_PUBLIC_JOULE_PROXY_URL;
+    delete process.env.EXPO_PUBLIC_JOULE_PROXY_TOKEN;
+    const fetchImpl = fakeFetchSequence([
+      { ok: false, status: 500, statusText: 'Internal Server Error', json: async () => ({ error: { message: 'upstream overloaded' } }) },
+    ]);
+
+    const result = await callGeminiStructured('gemini-3.6-flash', 'prompt', undefined, fetchImpl);
+
+    expect(result.ok).toBe(false);
+    if (result.ok) return;
+    expect(result.error.kind).toBe('http_error');
+    expect(fetchImpl).toHaveBeenCalledTimes(1);
+  });
+
+  it('does NOT fail over when the request carries non-image media (a voice note) — OpenRouter\'s content shape has no agreed slot for audio', async () => {
+    configureProxy();
+    const fetchImpl = fakeFetchSequence([
+      { ok: false, status: 500, statusText: 'Internal Server Error', json: async () => ({ error: { message: 'upstream overloaded' } }) },
+    ]);
+
+    const result = await callGeminiStructured(
+      'gemini-3.6-flash',
+      'prompt',
+      [
+        { mimeType: 'image/jpeg', base64Data: 'photoBytes' },
+        { mimeType: 'audio/m4a', base64Data: 'audioBytes' },
+      ],
+      fetchImpl
+    );
+
+    expect(result.ok).toBe(false);
+    if (result.ok) return;
+    expect(result.error.kind).toBe('http_error');
+    expect(fetchImpl).toHaveBeenCalledTimes(1);
+  });
+
+  it('surfaces the OpenRouter error itself when Google fails AND the backup also fails', async () => {
+    configureProxy();
+    const fetchImpl = fakeFetchSequence([
+      { ok: false, status: 500, statusText: 'Internal Server Error', json: async () => ({ error: { message: 'google overloaded' } }) },
+      { ok: false, status: 503, statusText: 'Service Unavailable', json: async () => ({ error: { message: 'openrouter overloaded too' } }) },
+    ]);
+
+    const result = await callGeminiStructured('gemini-3.6-flash', 'prompt', undefined, fetchImpl);
+
+    expect(result.ok).toBe(false);
+    if (result.ok) return;
+    expect(result.error.kind).toBe('http_error');
+    if (result.error.kind !== 'http_error') return;
+    expect(result.error.message).toBe('openrouter overloaded too');
+    expect(fetchImpl).toHaveBeenCalledTimes(2);
+  });
+
+  it('fails over to OpenRouter only after the Gemini model-deprecation chain is exhausted (last candidate 500s)', async () => {
+    configureProxy();
+    // Every MODEL_FALLBACKS candidate 404s as retired except the very
+    // last one tried, which 500s instead — an availability failure, so
+    // the backup should still fire once the chain gives up.
+    const deprecation404 = {
+      ok: false,
+      status: 404,
+      json: async () => ({ error: { message: 'This model is no longer available to new users.' } }),
+    };
+    const lastCandidateOverloaded = {
+      ok: false,
+      status: 500,
+      statusText: 'Internal Server Error',
+      json: async () => ({ error: { message: 'upstream overloaded' } }),
+    };
+    let call = 0;
+    const fetchImpl = jest.fn(async () => {
+      call += 1;
+      // preferred + 3 of the 4 MODEL_FALLBACKS entries 404 (calls 1-4),
+      // the 4th fallback candidate 500s (call 5), then OpenRouter answers.
+      if (call <= 4) {
+        return { ok: false, status: 404, statusText: '', json: deprecation404.json } as unknown as Response;
+      }
+      if (call === 5) {
+        return { ok: false, status: 500, statusText: 'Internal Server Error', json: lastCandidateOverloaded.json } as unknown as Response;
+      }
+      return { ok: true, status: 200, statusText: '', json: async () => openRouterEnvelope(validItemsJson()) } as unknown as Response;
+    });
+
+    const result = await callGeminiStructured('some-retired-model', 'prompt', undefined, fetchImpl);
+
+    expect(result.ok).toBe(true);
+    if (!result.ok) return;
+    expect(result.provider).toBe('openrouter');
+    expect(fetchImpl).toHaveBeenCalledTimes(6);
   });
 });

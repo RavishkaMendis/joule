@@ -119,5 +119,27 @@ module.exports = tseslint.config(
         console: 'readonly',
       },
     },
+  },
+  {
+    // The proxy's own test suite (proxy/api/__tests__) runs under Jest via
+    // the root jest.config.js's testMatch, same as every other __tests__
+    // directory in this repo — it just happens to be plain JS because the
+    // proxy itself is (see the block above). Needs Jest's globals on top
+    // of the Node ones already granted to proxy/**/*.js.
+    files: ['proxy/**/__tests__/**/*.js'],
+    languageOptions: {
+      globals: {
+        describe: 'readonly',
+        it: 'readonly',
+        test: 'readonly',
+        expect: 'readonly',
+        jest: 'readonly',
+        beforeEach: 'readonly',
+        afterEach: 'readonly',
+        beforeAll: 'readonly',
+        afterAll: 'readonly',
+        global: 'writable',
+      },
+    },
   }
 );

@@ -26,7 +26,7 @@
 // of dead-ending the user. This WILL happen again — model ids are not
 // stable — so the chain is the fix, not just the new id.
 //
-// ⚠️ DRIFT HAZARD: `MODEL_FALLBACKS` below is mirrored by `ALLOWED_MODELS`
+// ⚠️ DRIFT HAZARD: `MODEL_FALLBACKS` below is mirrored by `ALLOWED_GOOGLE_MODELS`
 // in `proxy/api/gemini.js` (the deployed proxy — read-only from here). If
 // a model is added/removed in one but not the other, the proxy will 400
 // a model this client believes is fine ("Model not permitted by this
@@ -59,6 +59,7 @@
 // ═══════════════════════════════════════════════════════════════════════
 
 import { getGeminiTransport, type GeminiTransport } from './apiKey';
+import { convertGeminiSchemaToOpenAIStrict } from './schemaConverter';
 import { GEMINI_RESPONSE_SCHEMA, isGeminiStructuredResponse, type GeminiStructuredResponse } from './schema';
 
 export const GEMINI_MODELS = {
@@ -105,6 +106,24 @@ export function isModelDeprecationError(status: number, body: string): boolean {
 
 const API_BASE = 'https://generativelanguage.googleapis.com/v1beta/models';
 
+// ─── OpenRouter availability failover ───
+//
+// Google fails for the owner once or twice a day. `MODEL_FALLBACKS` above
+// only helps when Google *names a replacement model*; it does nothing for
+// a plain outage (5xx/429/timeout), which is the common case. OpenRouter
+// sits AFTER that chain as a last resort: only tried once every Gemini
+// candidate has been exhausted, and only for the kind of failure a
+// different provider can plausibly fix (see `isAvailabilityFailure`).
+//
+// Deliberately a different company from Google — a Google-hosted model on
+// OpenRouter (e.g. Gemini via OpenRouter) would go down in the same
+// outage this is meant to survive. Swap this one line to change the
+// backup model; nothing else in this file needs to change.
+export const OPENROUTER_BACKUP_MODEL = 'openai/gpt-5-nano';
+
+/** Which provider actually produced a successful structured response. */
+export type AiProvider = 'google' | 'openrouter';
+
 export type InlineMediaPart = {
   /** MIME type, e.g. 'image/jpeg' or 'audio/m4a'. */
   mimeType: string;
@@ -113,7 +132,7 @@ export type InlineMediaPart = {
 };
 
 export type GeminiStructuredCallResult =
-  | { ok: true; response: GeminiStructuredResponse; rawText: string; retried: boolean }
+  | { ok: true; response: GeminiStructuredResponse; rawText: string; retried: boolean; provider: AiProvider }
   | { ok: false; error: GeminiCallError };
 
 export type GeminiCallError =
@@ -121,7 +140,7 @@ export type GeminiCallError =
   | { kind: 'http_error'; status: number; message: string }
   /** Proxy rejected the request: missing/wrong `x-joule-token`. Only ever produced when `transport.kind === 'proxy'` — a direct call never reaches this (Google's own auth failures don't use bare 401). Distinct from `network_error` on purpose: this is a config/credentials problem on Joule's own proxy, not a connectivity one, and needs a different user action (fix the token) from either "no key" or "can't reach the internet". */
   | { kind: 'unauthorized'; message: string }
-  /** Proxy's `ALLOWED_MODELS` rejected this model id (its 400 "Model not permitted..." response) — the drift-hazard case documented above: the app thinks a model is fine but the proxy's mirrored allowlist hasn't been updated to match. Also proxy-only. */
+  /** Proxy's `ALLOWED_GOOGLE_MODELS` rejected this model id (its 400 "Model not permitted..." response) — the drift-hazard case documented above: the app thinks a model is fine but the proxy's mirrored allowlist hasn't been updated to match. Also proxy-only. */
   | { kind: 'model_not_permitted'; message: string }
   | { kind: 'network_error'; message: string }
   | { kind: 'parse_failed_twice'; lastRawText: string };
@@ -142,6 +161,20 @@ function classifyHttpError(transport: GeminiTransport, status: number, message: 
 }
 
 /**
+ * True for the failure shapes a second PROVIDER can plausibly fix:
+ * upstream overload/rate-limit (5xx, 429) or not being able to reach the
+ * network at all. False for 400/401 — those mean a bug or a
+ * misconfiguration on Joule's side (bad request shape, bad key/token),
+ * and switching providers would silently hide that instead of surfacing
+ * it, per the failover design brief.
+ */
+function isAvailabilityFailure(result: CallOnceResult): boolean {
+  if (result.kind === 'network_error') return true;
+  if (result.kind === 'http_error') return result.status >= 500 || result.status === 429;
+  return false;
+}
+
+/**
  * Calls a Gemini model with a text prompt plus optional inline media —
  * a single part (image OR audio) or an array (e.g. meal photo + voice
  * note together, PRD §7.4) — forcing strict structured JSON output. On a
@@ -151,6 +184,13 @@ function classifyHttpError(transport: GeminiTransport, status: number, message: 
  * on parse failure, then fall back to manual entry". The "fall back to
  * manual entry" half of that sentence is the caller's job: this function
  * just reports `{ ok: false }` so the screen can route there.
+ *
+ * As a LAST resort — after the Gemini model-fallback chain is exhausted —
+ * an availability failure (5xx/429/network; never 400/401) is retried
+ * once more against OpenRouter's `OPENROUTER_BACKUP_MODEL`, but only when
+ * a proxy transport is configured: OpenRouter's key lives server-side
+ * exactly like Google's, so a direct-key-only setup (no proxy) has no
+ * route to it and gets Google's own error instead. See `maybeFailoverToOpenRouter`.
  */
 export async function callGeminiStructured(
   modelId: string,
@@ -162,14 +202,16 @@ export async function callGeminiStructured(
   if (!transport) return { ok: false, error: { kind: 'missing_key' } };
 
   const { result: first, modelUsed } = await callWithModelFallback(modelId, prompt, media, transport, fetchImpl);
-  if (first.kind === 'http_error') {
-    return { ok: false, error: classifyHttpError(transport, first.status, first.message) };
-  }
-  if (first.kind === 'network_error') {
-    return { ok: false, error: first };
+  if (first.kind === 'http_error' || first.kind === 'network_error') {
+    const backup = await maybeFailoverToOpenRouter(first, prompt, media, transport, fetchImpl);
+    if (backup) return backup;
+    return {
+      ok: false,
+      error: first.kind === 'http_error' ? classifyHttpError(transport, first.status, first.message) : first,
+    };
   }
   if (first.kind === 'ok') {
-    return { ok: true, response: first.response, rawText: first.rawText, retried: false };
+    return { ok: true, response: first.response, rawText: first.rawText, retried: false, provider: 'google' };
   }
 
   // First attempt parsed to invalid/malformed JSON — retry once with a
@@ -178,17 +220,71 @@ export async function callGeminiStructured(
   // Reuse the model that actually answered — no point re-walking the
   // fallback chain when we already know which id this transport can reach.
   const second = await callOnce(modelUsed, retryPrompt, media, transport, fetchImpl);
-  if (second.kind === 'http_error') {
-    return { ok: false, error: classifyHttpError(transport, second.status, second.message) };
-  }
-  if (second.kind === 'network_error') {
-    return { ok: false, error: second };
+  if (second.kind === 'http_error' || second.kind === 'network_error') {
+    const backup = await maybeFailoverToOpenRouter(second, prompt, media, transport, fetchImpl);
+    if (backup) return backup;
+    return {
+      ok: false,
+      error: second.kind === 'http_error' ? classifyHttpError(transport, second.status, second.message) : second,
+    };
   }
   if (second.kind === 'ok') {
-    return { ok: true, response: second.response, rawText: second.rawText, retried: true };
+    return { ok: true, response: second.response, rawText: second.rawText, retried: true, provider: 'google' };
   }
 
   return { ok: false, error: { kind: 'parse_failed_twice', lastRawText: second.rawText } };
+}
+
+/**
+ * The OpenRouter last-resort: returns `null` when failover shouldn't be
+ * attempted at all (not an availability failure, or no proxy to route
+ * through, or the request carries media OpenRouter's chat-completions
+ * shape can't express — see `hasOnlyImageMedia`), in which case the
+ * caller reports Gemini's own error unchanged. Otherwise makes exactly
+ * ONE OpenRouter attempt (no further fallback chain — this IS the last
+ * resort) and returns its outcome, success or failure, as the final word.
+ */
+async function maybeFailoverToOpenRouter(
+  failure: CallOnceResult,
+  prompt: string,
+  media: InlineMediaPart | InlineMediaPart[] | undefined,
+  transport: GeminiTransport,
+  fetchImpl: typeof fetch
+): Promise<GeminiStructuredCallResult | null> {
+  if (transport.kind !== 'proxy') return null;
+  if (!isAvailabilityFailure(failure)) return null;
+  if (!hasOnlyImageMedia(media)) return null;
+
+  const result = await callOpenRouterOnce(OPENROUTER_BACKUP_MODEL, prompt, media, transport, fetchImpl);
+
+  if (result.kind === 'ok') {
+    return { ok: true, response: result.response, rawText: result.rawText, retried: false, provider: 'openrouter' };
+  }
+  if (result.kind === 'network_error') {
+    return { ok: false, error: result };
+  }
+  if (result.kind === 'http_error') {
+    return { ok: false, error: classifyHttpError(transport, result.status, result.message) };
+  }
+  // 'parse_failed' — this is already the last resort, so there is no
+  // second attempt to make against OpenRouter the way Gemini gets one;
+  // reuse the existing "gave up on structured parsing" error kind.
+  return { ok: false, error: { kind: 'parse_failed_twice', lastRawText: result.rawText } };
+}
+
+/**
+ * OpenRouter's chat-completions `content` array (design brief) only
+ * covers `text` and `image_url` parts — there is no agreed shape here for
+ * audio (the meal-photo + voice-note path, PRD §7.4). Rather than
+ * silently dropping the voice note or guessing at an `input_audio` shape
+ * gpt-5-nano may not even support, failover is skipped entirely when any
+ * attached media isn't an image, and Gemini's own error is surfaced
+ * instead. Image-only requests (the common case: label OCR, meal photo
+ * with no voice note, pot ingredients) fail over normally.
+ */
+function hasOnlyImageMedia(media: InlineMediaPart | InlineMediaPart[] | undefined): boolean {
+  const parts = media ? (Array.isArray(media) ? media : [media]) : [];
+  return parts.every((part) => part.mimeType.startsWith('image/'));
 }
 
 type CallOnceResult =
@@ -326,4 +422,114 @@ function extractText(json: unknown): string | null {
   if (!Array.isArray(parts) || parts.length === 0) return null;
   const text = (parts[0] as { text?: unknown })?.text;
   return typeof text === 'string' ? text : null;
+}
+
+/**
+ * The OpenRouter (OpenAI-shaped) equivalent of `callOnce` — same
+ * `CallOnceResult` shape so `maybeFailoverToOpenRouter` can reuse the
+ * exact same http/network/parse handling as the Gemini path, but a
+ * completely different request/response envelope:
+ *
+ *   - request: `messages[].content[]` (`text` + `image_url` parts) and
+ *     `response_format: { type: 'json_schema', json_schema: { strict } }`
+ *     instead of `contents[].parts[]` + `generationConfig.responseSchema`.
+ *   - response: `choices[0].message.content` instead of
+ *     `candidates[0].content.parts[0].text`.
+ *
+ * Always routed through the proxy (never called when
+ * `transport.kind !== 'proxy'` — see `maybeFailoverToOpenRouter`) so the
+ * OpenRouter key never ships in the app bundle, exactly like Google's.
+ * The proxy contract gains a `provider` field for this
+ * (`proxy/api/gemini.js`); `model`/`payload`/the `x-joule-token` header
+ * are otherwise identical to a Gemini proxy call.
+ */
+async function callOpenRouterOnce(
+  modelId: string,
+  prompt: string,
+  media: InlineMediaPart | InlineMediaPart[] | undefined,
+  transport: Extract<GeminiTransport, { kind: 'proxy' }>,
+  fetchImpl: typeof fetch
+): Promise<CallOnceResult> {
+  const payload = buildOpenRouterBody(modelId, prompt, media);
+
+  let res: Response;
+  try {
+    res = await fetchImpl(transport.config.url, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', 'x-joule-token': transport.config.token },
+      body: JSON.stringify({ provider: 'openrouter', model: modelId, payload }),
+    });
+  } catch (err) {
+    return { kind: 'network_error', message: err instanceof Error ? err.message : String(err) };
+  }
+
+  if (!res.ok) {
+    let message = res.statusText;
+    try {
+      const errBody = (await res.json()) as { error?: { message?: string } };
+      if (errBody?.error?.message) message = errBody.error.message;
+    } catch {
+      // Body wasn't JSON; keep statusText.
+    }
+    return { kind: 'http_error', status: res.status, message };
+  }
+
+  let json: unknown;
+  try {
+    json = await res.json();
+  } catch {
+    return { kind: 'parse_failed', rawText: '<non-JSON HTTP response>' };
+  }
+
+  const rawText = extractOpenRouterText(json);
+  if (rawText === null) return { kind: 'parse_failed', rawText: JSON.stringify(json) };
+
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(rawText);
+  } catch {
+    return { kind: 'parse_failed', rawText };
+  }
+
+  if (!isGeminiStructuredResponse(parsed)) {
+    return { kind: 'parse_failed', rawText };
+  }
+
+  return { kind: 'ok', response: parsed, rawText };
+}
+
+/** Builds an OpenAI-shaped chat-completions body per the failover design brief. */
+function buildOpenRouterBody(
+  modelId: string,
+  prompt: string,
+  media: InlineMediaPart | InlineMediaPart[] | undefined
+): Record<string, unknown> {
+  const content: Array<Record<string, unknown>> = [{ type: 'text', text: prompt }];
+  const mediaParts = media ? (Array.isArray(media) ? media : [media]) : [];
+  for (const part of mediaParts) {
+    content.push({ type: 'image_url', image_url: { url: `data:${part.mimeType};base64,${part.base64Data}` } });
+  }
+
+  return {
+    model: modelId,
+    messages: [{ role: 'user', content }],
+    response_format: {
+      type: 'json_schema',
+      json_schema: {
+        name: 'joule_structured_response',
+        strict: true,
+        schema: convertGeminiSchemaToOpenAIStrict(GEMINI_RESPONSE_SCHEMA),
+      },
+    },
+  };
+}
+
+/** Pulls the model's text output out of an OpenAI-shaped chat-completions envelope. */
+function extractOpenRouterText(json: unknown): string | null {
+  if (typeof json !== 'object' || json === null) return null;
+  const choices = (json as { choices?: unknown }).choices;
+  if (!Array.isArray(choices) || choices.length === 0) return null;
+  const message = (choices[0] as { message?: unknown })?.message;
+  const content = (message as { content?: unknown })?.content;
+  return typeof content === 'string' ? content : null;
 }
